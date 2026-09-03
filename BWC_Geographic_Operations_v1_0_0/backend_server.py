@@ -1923,18 +1923,22 @@ class LocalAxonGeographicHandler(BaseHTTPRequestHandler):
 
 def make_server(port: int, state: SessionState, auto_port: bool = False) -> ThreadingHTTPServer:
     handler = type("BoundLocalAxonGeographicHandler", (LocalAxonGeographicHandler,), {"state": state})
-    candidates = range(port, min(port + 11, 65536)) if auto_port else [port]
+    # On Windows, adjacent ports can fall inside an excluded/reserved range and
+    # return WSAEACCES even when the original failure was EADDRINUSE. Ask the
+    # OS for a safe ephemeral loopback port instead of incrementing blindly.
+    candidates = [port, 0] if auto_port and port else [port]
+    retryable_errors = {errno.EADDRINUSE, errno.EACCES, 10013}
     last_error: OSError | None = None
     for candidate in candidates:
         try:
             return ThreadingHTTPServer(("127.0.0.1", candidate), handler)
         except OSError as exc:
             last_error = exc
-            if not auto_port or exc.errno != errno.EADDRINUSE:
+            if not auto_port or exc.errno not in retryable_errors:
                 raise
     raise OSError(
         errno.EADDRINUSE,
-        f"No available loopback port was found from {port} through {min(port + 10, 65535)}.",
+        f"No available loopback port could be selected for requested port {port}.",
     ) from last_error
 
 
@@ -1965,7 +1969,7 @@ def main() -> int:
     print(f"BWC Geographic Operations v{VERSION}")
     print(f"Local address: {url}")
     if selected_port != args.port:
-        print(f"Port {args.port} was already in use; selected the next available local port.")
+        print(f"Port {args.port} was unavailable; selected an available local loopback port.")
     print("Credentials and live rows remain only in this process and are cleared when it exits.")
     print("Axon operational resource calls are read-only GET requests.")
     print(f"Governance working directory: {CROSSWALK_ROOT}")

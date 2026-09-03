@@ -234,7 +234,7 @@ class BackendServerTests(unittest.TestCase):
         try:
             server = backend_server.make_server(requested_port, state, auto_port=True)
             self.assertNotEqual(server.server_address[1], requested_port)
-            self.assertGreater(server.server_address[1], requested_port)
+            self.assertGreater(server.server_address[1], 0)
         finally:
             if server:
                 server.server_close()

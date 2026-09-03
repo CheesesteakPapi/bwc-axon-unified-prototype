@@ -24,6 +24,7 @@ Distribution-package counts and archive hashes remain with the preserved local p
 - Bound the Vite development servers to `127.0.0.1` and retained the one-time-token local service boundary.
 - Added a publishing safety scanner, restrictive `.gitignore`, least-privilege GitHub Actions workflow, Dependabot configuration, CODEOWNERS, and a pull-request safety checklist.
 - Corrected clean-runner test working directories and pinned the current GitHub-maintained checkout/runtime setup actions to verified commit SHAs.
+- Corrected Windows automatic-port fallback to request a safe OS-selected loopback port instead of incrementing into a potentially excluded Windows port range.
 - Updated Vite from 6.4.2 to 6.4.3 and refreshed affected transitive dependencies; `npm audit --audit-level=high` reports zero known vulnerabilities for both client trees and now runs in CI.
 - Revalidated 8 shared tests, 30 Provisioning tests, 23 Geographic tests, both React builds, and both standalone UI build checks.
 
