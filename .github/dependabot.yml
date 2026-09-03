@@ -1,0 +1,12 @@
+version: 2
+updates:
+  - package-ecosystem: npm
+    directory: /Axon_BWC_Provisioning_Center_v1_0_0
+    schedule:
+      interval: monthly
+    open-pull-requests-limit: 5
+  - package-ecosystem: npm
+    directory: /BWC_Geographic_Operations_v1_0_0
+    schedule:
+      interval: monthly
+    open-pull-requests-limit: 5

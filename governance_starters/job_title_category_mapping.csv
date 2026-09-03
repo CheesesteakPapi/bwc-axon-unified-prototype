@@ -1,0 +1,4 @@
+Exact Job Title,Job Category,Review Status,Mapping Method,Confidence,Reviewer,Reviewed At UTC,Review Notes
+Prototype Standard User,Standard User,Approved,Synthetic fixture,High,Synthetic fixture,2026-01-01T00:00:00Z,Test-only exact-title mapping.
+Prototype First-Line Supervisor,First-Line Supervisor,Approved,Synthetic fixture,High,Synthetic fixture,2026-01-01T00:00:00Z,Test-only exact-title mapping.
+Prototype Senior Supervisor,Senior/Second-Line Supervisor,Approved,Synthetic fixture,High,Synthetic fixture,2026-01-01T00:00:00Z,Test-only exact-title mapping.

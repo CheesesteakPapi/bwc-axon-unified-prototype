@@ -1,0 +1,6 @@
+Canonical Field,Directory Attribute,Required,Sent To Axon,Review Status,Mapping Method,Confidence,Review Notes
+Email,mail or userPrincipalName,Yes,Yes,Needs review,Synthetic schema placeholder,Not rated,Configure the authoritative directory attribute before live use.
+External ID,employeeId,Yes,Yes,Needs review,Synthetic schema placeholder,Not rated,Select a stable unique identifier before live use.
+Badge Number,extensionAttribute1,Yes,Yes,Needs review,Administrator configuration,Not rated,Replace this placeholder with the approved badge attribute.
+Supervisor Email,manager.mail,No,Yes,Needs review,Synthetic schema placeholder,Not rated,Supervisor Email and Supervisor UPN remain separate.
+Supervisor UPN,manager.userPrincipalName,No,No,Needs review,Synthetic schema placeholder,Not rated,Review-only value; not emitted to the Axon user import.

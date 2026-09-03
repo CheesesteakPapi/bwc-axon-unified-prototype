@@ -1,0 +1,14 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 680" role="img" aria-labelledby="title desc">
+  <title id="title">Synthetic coverage map placeholder</title>
+  <desc id="desc">Abstract non-geographic regions for demonstration. No operational boundaries or facilities are shown.</desc>
+  <rect width="1200" height="680" rx="28" fill="#eef3f8"/>
+  <path d="M90 120h430l85 145-120 160H110z" fill="#c8d8e8" stroke="#6b849c" stroke-width="5"/>
+  <path d="M535 95h550l35 230-165 135-360-55 55-165z" fill="#d9e4ce" stroke="#71866a" stroke-width="5"/>
+  <path d="M255 455h650l95 115-115 55H230l-90-95z" fill="#ead8bd" stroke="#9a7d55" stroke-width="5"/>
+  <g fill="#1f3347" font-family="Arial, sans-serif" font-size="34" font-weight="700">
+    <text x="235" y="285">AREA ALPHA</text>
+    <text x="760" y="285">AREA BETA</text>
+    <text x="500" y="555">AREA GAMMA</text>
+  </g>
+  <text x="600" y="650" text-anchor="middle" fill="#53677a" font-family="Arial, sans-serif" font-size="23">SYNTHETIC PLACEHOLDER — CONFIGURE GOVERNED MAP DATA LOCALLY</text>
+</svg>

@@ -1,0 +1,227 @@
+{
+  "_comment": "Copy to config.json. Put your Axon tenant URL in agency_base_url. Do not place Partner ID, Client ID, Client Secret, or access tokens in this file. Use --device-model, --device-status, or --device-home-id for a filtered read-only Device sync.",
+  "agency_base_url": "https://YOUR_AGENCY.evidence.com",
+  "timeout_seconds": 90,
+  "keep_raw_json": false,
+  "raw_dir": "data/raw",
+  "schema_dir": "data/schemas",
+  "processed_dir": "data/processed",
+  "sync_log_csv": "state/sync_log.csv",
+  "device_home_crosswalk_csv": "device_home_crosswalk_starter.csv",
+  "device_status_map_csv": "device_status_map.csv",
+  "non_site_group_register_csv": "axon_non_site_group_register_starter.csv",
+  "group_hierarchy_request_interval_seconds": 5,
+  "resources": {
+    "DeviceHomes": {
+      "method": "GET",
+      "endpoint": "/api/v1/agencies/{agency_id}/devices/homes/list",
+      "permission": "Partner any.read (2023 guide; verify current tenant UI)",
+      "probe_params": {},
+      "sync_params": {},
+      "items_paths": [
+        "data",
+        "value"
+      ],
+      "pagination_mode": "none",
+      "page_size": 0,
+      "max_pages": 1,
+      "output_csv": "axon_device_homes.csv",
+      "field_map": {
+        "Device Home Name (API)": "attributes.name",
+        "Point of Contact User ID": "attributes.pointOfContactId"
+      },
+      "output_headers": [
+        "Device Home Name (API)",
+        "Normalized Device Home Key",
+        "Point of Contact User ID",
+        "Point of Contact Name",
+        "Mapped Site ID",
+        "Mapped Component",
+        "Mapped Region / AOR",
+        "Mapping Status",
+        "Last Sync At",
+        "Sync Status"
+      ]
+    },
+    "Groups": {
+      "method": "GET",
+      "endpoint": "/api/v1/agencies/{agency_id}/groups",
+      "permission": "Read access to Groups (verify exact current tenant label)",
+      "probe_params": {},
+      "sync_params": {},
+      "items_paths": [
+        "data",
+        "value"
+      ],
+      "pagination_mode": "none",
+      "page_size": 0,
+      "max_pages": 1,
+      "output_csv": "axon_groups.csv",
+      "field_map": {
+        "Axon Group ID": "id",
+        "External Group ID": "attributes.externalId",
+        "Group Name": "attributes.name",
+        "Group Status": "attributes.status",
+        "Source Updated At": "attributes.updatedOn"
+      },
+      "output_headers": [
+        "Axon Group ID",
+        "External Group ID",
+        "Group Name",
+        "Group Status",
+        "Group Classification",
+        "Command Hierarchy Level",
+        "Reporting Inclusion",
+        "Mapped Site ID",
+        "Mapped Component",
+        "Mapped Region / AOR",
+        "Mapping Status",
+        "Review Notes",
+        "Source Updated At",
+        "Last Sync At",
+        "Sync Status"
+      ]
+    },
+    "Users": {
+      "method": "GET",
+      "endpoint": "/api/v4/agencies/{agency_id}/users",
+      "permission": "users.read",
+      "probe_params": {
+        "limit": 5,
+        "offset": 0
+      },
+      "sync_params": {
+        "limit": 500,
+        "offset": 0
+      },
+      "items_paths": [
+        "data",
+        "value"
+      ],
+      "pagination_mode": "next_or_offset",
+      "next_paths": [
+        "links.next",
+        "_links.next",
+        "pagination.next",
+        "meta.links.next",
+        "next"
+      ],
+      "offset_param": "offset",
+      "page_size": 500,
+      "max_pages": 10000,
+      "output_csv": "axon_users.csv",
+      "field_map": {
+        "Axon User ID": "id",
+        "External ID": "attributes.externalId",
+        "Badge ID": "attributes.badgeNumber",
+        "First Name": "attributes.firstName",
+        "Last Name": "attributes.lastName",
+        "Email": "attributes.email",
+        "User Status": "attributes.status",
+        "Role": [
+          "attributes.role",
+          "relationships.role.data.attributes.name",
+          "relationships.role.data.id"
+        ],
+        "Last Activity": "attributes.lastLoginOn",
+        "Source Updated At": "attributes.updatedOn"
+      },
+      "output_headers": [
+        "Axon User ID",
+        "External ID",
+        "Badge ID",
+        "First Name",
+        "Last Name",
+        "Email",
+        "User Status",
+        "Role",
+        "Last Activity",
+        "Source Updated At",
+        "Last Sync At",
+        "Sync Status"
+      ]
+    },
+    "Devices": {
+      "method": "GET",
+      "endpoint": "/api/v1/agencies/{agency_id}/devices",
+      "permission": "device.any.read",
+      "probe_params": {
+        "limit": 5,
+        "offset": 0
+      },
+      "sync_params": {
+        "limit": 100,
+        "offset": 0
+      },
+      "request_interval_seconds": 5,
+      "items_paths": [
+        "data",
+        "value"
+      ],
+      "pagination_mode": "next_or_offset",
+      "next_paths": [
+        "links.next",
+        "_links.next",
+        "pagination.next",
+        "meta.links.next",
+        "next"
+      ],
+      "offset_param": "offset",
+      "page_size": 100,
+      "max_pages": 10000,
+      "output_csv": "axon_devices.csv",
+      "field_map": {
+        "Axon Device ID": "id",
+        "Serial Number": "attributes.serial",
+        "Device Model": "attributes.model",
+        "Device Name": "attributes.friendlyName",
+        "Device Status": "attributes.status2",
+        "Assigned User ID": "relationships.owner.data.id",
+        "Assigned User Name": [
+          "relationships.owner.data.attributes.name",
+          "relationships.owner.data.attributes.displayName"
+        ],
+        "Device Home Name (API)": [
+          "relationships.deviceHome.data.attributes.name",
+          "attributes.deviceHome"
+        ],
+        "Firmware": "attributes.firmwareVersion",
+        "Last Upload": "attributes.lastUploadDateTime",
+        "Last Connected": [
+          "attributes.lastConnected",
+          "attributes.lastConnectedDateTime"
+        ],
+        "Dock ID / Name": [
+          "attributes.lastConnectedDock",
+          "relationships.lastConnectedDock.data.id"
+        ],
+        "Point of Contact": "",
+        "Error Status": "attributes.errorStatus",
+        "Source Updated At": "attributes.dateModified"
+      },
+      "output_headers": [
+        "Axon Device ID",
+        "Serial Number",
+        "Device Model",
+        "Device Status",
+        "Assigned User ID",
+        "Assigned User Name",
+        "Normalized Device Home Key",
+        "Device Home Name (API)",
+        "Mapped Site ID",
+        "Firmware",
+        "Last Upload",
+        "Last Connected",
+        "Dock ID / Name",
+        "Point of Contact",
+        "Error Status",
+        "Source Updated At",
+        "Last Sync At",
+        "Sync Status",
+        "Reporting Device State",
+        "Device Name"
+      ]
+    }
+  },
+  "axon_group_crosswalk_csv": "axon_group_crosswalk_starter.csv"
+}

@@ -1,0 +1,48 @@
+name: V3.1 source validation
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: |
+            Axon_BWC_Provisioning_Center_v1_0_0/package-lock.json
+            BWC_Geographic_Operations_v1_0_0/package-lock.json
+      - name: Check publishing safety boundary
+        run: python scripts/check_publish_safety.py
+      - name: Test shared workspace
+        run: python -m unittest discover -s tests -q
+      - name: Test Provisioning Center backend
+        run: python -m unittest discover -s Axon_BWC_Provisioning_Center_v1_0_0/tests -p "test_*.py" -q
+      - name: Test Geographic Operations backend
+        run: python -m unittest discover -s BWC_Geographic_Operations_v1_0_0/tests -p "test_*.py" -q
+      - name: Build and test Provisioning Center UI
+        working-directory: Axon_BWC_Provisioning_Center_v1_0_0
+        run: npm ci && npm audit --audit-level=high && npm run build && npm run test:ui
+      - name: Build and test Geographic Operations UI
+        working-directory: BWC_Geographic_Operations_v1_0_0
+        run: npm ci && npm audit --audit-level=high && npm run build && npm run test:ui
+      - name: Parse PowerShell launchers
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: Get-ChildItem -Path . -Filter '*.ps1' | ForEach-Object { [void][scriptblock]::Create((Get-Content -Raw $_.FullName)) }

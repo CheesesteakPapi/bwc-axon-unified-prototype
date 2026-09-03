@@ -1,0 +1,63 @@
+# Secrets and tenant-specific configuration
+.env
+.env.*
+!.env.example
+config.json
+**/config.json
+*.pem
+*.pfx
+*.p12
+*.key
+
+# Local data and generated operational artifacts
+governance_data/working/
+migration/
+data/
+state/
+exports/
+uploads/
+*.sqlite
+*.sqlite3
+*.sqlite3-*
+*.db
+*.db-wal
+*.db-shm
+*.csv.tmp
+
+# Agency source material and binary office artifacts
+*.xlsx
+*.xlsm
+*.xls
+*.docx
+*.pdf
+*.png
+*.heic
+*.zip
+
+# Python and JavaScript build state
+.venv/
+__pycache__/
+*.py[cod]
+node_modules/
+coverage/
+
+# Local IDE and operating-system state
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+
+# Hosting metadata is local to a deployment target
+**/.openai/
+**/worker/
+**/scripts/prepare-sites-build.mjs
+**/design-qa*.md
+**/SOURCE_INTAKE_NOTES.md
+ADMIN_APPROVAL_REQUEST.md
+**/pnpm-lock.yaml
+**/pnpm-workspace.yaml
+
+# Superseded Provisioning Center UI modules retained only in the local source package
+Axon_BWC_Provisioning_Center_v1_0_0/src/components.jsx
+Axon_BWC_Provisioning_Center_v1_0_0/src/data.js
+Axon_BWC_Provisioning_Center_v1_0_0/src/vendor/

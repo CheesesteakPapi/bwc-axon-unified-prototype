@@ -1,0 +1,2 @@
+# Python 3.10 or newer. The integrated local web application uses only the
+# Python standard library. Node.js and Tk/Tkinter are not required at runtime.

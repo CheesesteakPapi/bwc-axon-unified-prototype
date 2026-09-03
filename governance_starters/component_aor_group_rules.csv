@@ -1,0 +1,4 @@
+Component,Personnel AOR,Job Category,Group Name,Membership Type,Review Status,Mapping Method,Confidence,Reviewer,Reviewed At UTC,Review Notes
+TEST,TEST AOR,Standard User,TEST Prototype Users,MEMBER,Approved,Synthetic fixture,High,Synthetic fixture,2026-01-01T00:00:00Z,Test-only rule; replace locally with reviewed tenant Group names and external IDs.
+TEST,TEST AOR,First-Line Supervisor,TEST Prototype Users,MONITOR,Approved,Synthetic fixture,High,Synthetic fixture,2026-01-01T00:00:00Z,Test-only rule; replace locally with reviewed tenant Group names and external IDs.
+TEST,TEST AOR,Senior/Second-Line Supervisor,TEST Second Line Supervisors,MONITOR,Approved,Synthetic fixture,High,Synthetic fixture,2026-01-01T00:00:00Z,Test-only rule; replace locally with reviewed tenant Group names and external IDs.

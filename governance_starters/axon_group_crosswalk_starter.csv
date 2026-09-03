@@ -1,0 +1,3 @@
+Site ID,Component,Region / AOR,Office Name,City,State,Site Code / DCO,Axon Group ID,External Group ID,Axon Group Name,Mapping Status,Mapping Method,Confidence,Review Notes
+DEMO-SITE-001,TEST,Area Alpha,Example Office Alpha,Example City,ZZ,EXA,,,,Unmapped,Synthetic fixture,Not rated,Non-operational example; replace locally with reviewed tenant data.
+DEMO-SITE-002,TEST,Area Beta,Example Office Beta,Example City,ZZ,EXB,,,,Unmapped,Synthetic fixture,Not rated,Non-operational example; replace locally with reviewed tenant data.

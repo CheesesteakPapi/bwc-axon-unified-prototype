@@ -1,0 +1,2 @@
+Site ID,Component,Region / AOR,Office Name,City,State,Site Code / DCO,Device Home Name (API),Normalized Device Home Key,Mapping Status,Mapping Method,Confidence,Review Notes
+DEMO-SITE-001,TEST,Area Alpha,Example Office Alpha,Example City,ZZ,EXA,,,Unmapped,Not assessed,Not rated,Non-operational synthetic example; replace locally with reviewed tenant data.

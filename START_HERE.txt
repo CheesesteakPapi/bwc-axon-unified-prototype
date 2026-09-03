@@ -1,0 +1,19 @@
+BWC AXON UNIFIED PROTOTYPE V3.1.0
+Prototype - Python/PowerShell source execution
+Not a signed production desktop release
+
+WINDOWS 11 QUICK START
+1. Extract this package to C:\BWC31.
+2. Run Setup-BWC-Prototype.cmd once. No administrator elevation is required.
+3. Run Start-Provisioning-Prototype.cmd or Start-Geographic-Prototype.cmd.
+4. Keep the PowerShell window open and use the browser page opened by the launcher.
+
+The two applications share:
+%LOCALAPPDATA%\ICE\BWC Axon Operations\shared\shared_workspace.sqlite3
+
+Start with README.md. Use OPERATIONS_RUNBOOK.md for the workflow, API_CONTRACT.md
+for interfaces, DATA_MODEL.md for persistence, SECURITY_MODEL.md for boundaries,
+and WINDOWS_11_ACCEPTANCE.md for the remaining acceptance gates.
+
+Do not enter live credentials or submit Axon writes unless your organization has
+approved the prototype test, client permissions, mappings, and test window.

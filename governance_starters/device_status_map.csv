@@ -1,0 +1,5 @@
+Raw Axon Device Status,Reporting State,Validated By,Validated Date,Notes
+Assigned,Assigned,Synthetic fixture,2026-01-01,Example only; validate exact tenant status values before operational use.
+In Stock,In Stock,Synthetic fixture,2026-01-01,Example only; validate exact tenant status values before operational use.
+Lost,Lost,Synthetic fixture,2026-01-01,Example only; validate exact tenant status values before operational use.
+Relinquished,Relinquished,Synthetic fixture,2026-01-01,Example only; validate exact tenant status values before operational use.

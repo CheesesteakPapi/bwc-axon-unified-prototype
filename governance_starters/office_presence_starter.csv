@@ -1,0 +1,2 @@
+Office Location ID,Facility ID,Component,Region / AOR,Office Name,City,State,Site Code / DCO,Presence Type,Network Environment,Network Scope,Operational Status,Facility Link Status,Mapping Method,Confidence,Review Notes
+DEMO-OFFICE-001,,TEST,Area Alpha,Example Office Alpha,Example City,ZZ,EXA,Pending classification,Unknown / pending validation,Unknown / pending validation,Needs validation,Unlinked,Synthetic fixture,Not rated,Non-operational example; replace locally with reviewed office-presence data.

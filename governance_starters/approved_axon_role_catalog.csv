@@ -1,0 +1,3 @@
+Role Name,Review Status,Reviewer,Reviewed At UTC,Review Notes
+Prototype User,Approved,Synthetic fixture,2026-01-01T00:00:00Z,Test-only role; replace locally with the reviewed tenant Role catalog.
+Prototype Supervisor,Approved,Synthetic fixture,2026-01-01T00:00:00Z,Test-only supervisor role; replace locally with the reviewed tenant Role catalog.
