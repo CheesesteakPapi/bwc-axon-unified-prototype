@@ -1,6 +1,14 @@
 Canonical Field,Directory Attribute,Required,Sent To Axon,Review Status,Mapping Method,Confidence,Review Notes
-Email,mail or userPrincipalName,Yes,Yes,Needs review,Synthetic schema placeholder,Not rated,Configure the authoritative directory attribute before live use.
-External ID,employeeId,Yes,Yes,Needs review,Synthetic schema placeholder,Not rated,Select a stable unique identifier before live use.
-Badge Number,extensionAttribute1,Yes,Yes,Needs review,Administrator configuration,Not rated,Replace this placeholder with the approved badge attribute.
+Email,mail,Yes,Yes,Approved,Synthetic-safe user-confirmed mapping,High,Prototype schema: Email and UPN are distinct; resolve intake by exact mail.
+UPN,userPrincipalName,Yes,No,Approved,Synthetic-safe user-confirmed mapping,High,Prototype schema: retained separately and used as the source for External ID.
+External ID,userPrincipalName,Yes,Yes,Approved,Synthetic-safe user-confirmed mapping,High,Prototype schema: External ID intentionally equals UPN and not the Entra object ID.
+Badge Number,mailNickname,Yes,Yes,Approved,Synthetic-safe user-confirmed mapping,High,Prototype schema: Badge Number intentionally equals the Entra mail nickname.
+First Name,givenName,Yes,Yes,Approved,Synthetic-safe user-confirmed mapping,High,Prototype schema: directory given name.
+Last Name,surname,Yes,Yes,Approved,Synthetic-safe user-confirmed mapping,High,Prototype schema: directory surname.
+Username,mailNickname,Yes,Yes,Approved,Synthetic-safe user-confirmed mapping,High,Prototype schema: Username intentionally equals the Entra mail nickname.
+Directory Account Status,accountEnabled,No,No,Approved,Synthetic-safe user-confirmed rule,High,Prototype schema: retained separately; proposed Axon Status remains Active.
+Directory Location,officeLocation,No,Yes,Approved,Synthetic-safe user-confirmed mapping,High,Prototype schema: feeds reviewed personnel Location-to-AOR mapping.
+Component,department,No,No,Approved,Synthetic-safe user-confirmed mapping,High,Prototype schema: Department supplies Component for governed Group recommendation.
+Job Title,jobTitle,No,No,Approved,Synthetic-safe user-confirmed mapping,High,Prototype schema: feeds exact job-title classification.
 Supervisor Email,manager.mail,No,Yes,Needs review,Synthetic schema placeholder,Not rated,Supervisor Email and Supervisor UPN remain separate.
 Supervisor UPN,manager.userPrincipalName,No,No,Needs review,Synthetic schema placeholder,Not rated,Review-only value; not emitted to the Axon user import.

@@ -47,7 +47,8 @@ def candidate_files() -> list[Path]:
             ["git", "ls-files", "-z", "--cached", "--others", "--exclude-standard"],
             cwd=ROOT,
         )
-        return sorted(ROOT / item.decode("utf-8") for item in output.split(b"\0") if item)
+        candidates = (ROOT / item.decode("utf-8") for item in output.split(b"\0") if item)
+        return sorted(path for path in candidates if path.is_file())
     except (FileNotFoundError, subprocess.CalledProcessError):
         return sorted(path for path in ROOT.rglob("*") if path.is_file() and ".git" not in path.parts)
 

@@ -38,6 +38,15 @@ Every state-changing provisioning or governance request carries the expected run
 
 The existing health, configuration, session, memory-only credential, shutdown, download, and export routes remain supported in each component's API contract.
 
+## Entra delegated-read contract
+
+- The intake identifier is Email and resolves only against an exact Entra `mail` value. Email and UPN are not interchangeable.
+- The user search requests only the properties needed for provisioning enrichment. The manager read uses the returned Entra object ID rather than the intake email or UPN.
+- `mail` supplies Email; `userPrincipalName` supplies UPN and External ID; `mailNickname` supplies UserName and Badge Number; `givenName` and `surname` supply names; `department` supplies Component; `officeLocation` supplies Directory Location; and `jobTitle` supplies Job Title.
+- Proposed Axon Status is always `Active`. Entra `accountEnabled` is retained separately as Directory Account Status and can block a disabled account for review without changing proposed Status.
+- A missing required identity value is a review blocker. The provider does not replace a missing Email with UPN.
+- The delegated token remains process-memory-only. No Graph write or Entra group-membership endpoint is used.
+
 ## Snapshot rules
 
 - A resource refresh obtains a shared lease before any resource call.

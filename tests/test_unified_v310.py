@@ -5,14 +5,18 @@ import sys
 import tempfile
 import unittest
 import zipfile
+import json
 from io import BytesIO
 from pathlib import Path
+from urllib.parse import parse_qs, urlparse
+from unittest.mock import patch
 
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 from provisioning_workflow import (  # noqa: E402
+    EntraDelegatedProvider,
     SyntheticDirectoryProvider,
     canonicalize_input,
     detect_columns,
@@ -56,6 +60,67 @@ class UnifiedPrototypeTests(unittest.TestCase):
         self.assertEqual(rows[0]["supervisorUpn"], "")
         self.assertEqual(generation["userRecords"][0]["EVIDENCE_GROUP_EXT_ID"], "")
         self.assertEqual(generation["groupRecords"][0]["ENTITY_ID"], "alex.user@example.test")
+
+    def test_entra_delegated_read_resolves_exact_mail_and_maps_distinct_upn(self) -> None:
+        intake_email = "person.email@example.test"
+        upn = "account-name@tenant.example.test"
+        object_id = "TEST-ENTRA-OBJECT-ID-123"
+        requested_urls = []
+
+        def fake_urlopen(request, timeout):
+            self.assertEqual(timeout, 30)
+            self.assertEqual(request.get_header("Authorization"), "Bearer test-token")
+            requested_urls.append(request.full_url)
+            if "/manager?" in request.full_url:
+                self.assertIn("/users/" + object_id + "/manager", request.full_url)
+                return BytesIO(json.dumps({"mail": "manager@example.test", "userPrincipalName": "manager@tenant.example.test"}).encode("utf-8"))
+            parsed = urlparse(request.full_url)
+            self.assertEqual(parsed.path, "/v1.0/users")
+            query = parse_qs(parsed.query)
+            self.assertEqual(query["$filter"], [f"mail eq '{intake_email}'"])
+            selected = set(query["$select"][0].split(","))
+            self.assertTrue({"mailNickname", "department", "givenName", "surname"}.issubset(selected))
+            self.assertNotIn("employeeId", selected)
+            payload = {"value": [{
+                "id": object_id,
+                "mail": intake_email,
+                "userPrincipalName": upn,
+                "mailNickname": "person.alias",
+                "givenName": "Person",
+                "surname": "Example",
+                "accountEnabled": True,
+                "officeLocation": "Prototype Test Location",
+                "jobTitle": "Prototype Standard User",
+                "department": "TEST",
+                "businessPhones": ["202-555-0100"],
+                "mobilePhone": "",
+            }]}
+            return BytesIO(json.dumps(payload).encode("utf-8"))
+
+        provider = EntraDelegatedProvider("test-token")
+        with patch("urllib.request.urlopen", side_effect=fake_urlopen):
+            resolved = provider.resolve([intake_email])
+            rows, validation, generation = enrich_rows(
+                self.workspace,
+                [{"email": intake_email, "role": "Prototype User", "groupName": ""}],
+                provider,
+            )
+
+        self.assertEqual(len(requested_urls), 4)
+        self.assertEqual(resolved[intake_email]["externalId"], upn)
+        self.assertEqual(rows[0]["email"], intake_email)
+        self.assertEqual(rows[0]["upn"], upn)
+        self.assertEqual(rows[0]["externalId"], upn)
+        self.assertEqual(rows[0]["badgeNumber"], "person.alias")
+        self.assertEqual(rows[0]["username"], "person.alias")
+        self.assertEqual(rows[0]["firstName"], "Person")
+        self.assertEqual(rows[0]["lastName"], "Example")
+        self.assertEqual(rows[0]["status"], "Active")
+        self.assertEqual(rows[0]["component"], "TEST")
+        self.assertEqual(rows[0]["phone"], "202-555-0100")
+        self.assertTrue(validation["valid"])
+        self.assertEqual(generation["userRecords"][0]["EXTERNAL_ID"], upn)
+        self.assertEqual(generation["userRecords"][0]["STATUS"], "Active")
 
     def test_chunk_boundaries(self) -> None:
         for total, expected in ((500, 1), (501, 2), (1000, 2), (1500, 3)):

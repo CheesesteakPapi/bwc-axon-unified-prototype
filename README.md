@@ -38,7 +38,8 @@ Add Users → Enrich → Review Exceptions → Preview → Submit → Track
 - Start with `Email`, `Role`, and optional `Group Name` by paste, CSV, or XLSX.
 - The intake file does not need Axon headers. Formula cells, macros, links, and embedded XLSX content are not executed.
 - Directory enrichment supports a supplied directory export, a SharePoint/Power Automate export, synthetic test data, or a delegated Entra provider.
-- Entra lookup uses read-only delegated `User.Read.All`. Entra membership is not requested and is never correlated to Axon Groups.
+- Entra lookup uses read-only delegated `User.Read.All`. Intake Email is resolved against an exact Entra `mail` value; the returned UPN is preserved separately and used as External ID. Entra membership is not requested and is never correlated to Axon Groups.
+- The confirmed directory projection is `mail` → Email, `userPrincipalName` → UPN and External ID, `mailNickname` → UserName and Badge Number, `givenName`/`surname` → names, `department` → Component, `officeLocation` → Directory Location, and `jobTitle` → Job Title.
 - Status defaults to `Active`. Directory status remains separate; a disabled account is a blocker until reviewed.
 - Group recommendations use `Component + Personnel AOR + exact-title Job Category` and resolve only to reviewed current Axon Groups.
 - Preview identity fields are read-only. Assignment fields support governed row and bulk edits with reasons.

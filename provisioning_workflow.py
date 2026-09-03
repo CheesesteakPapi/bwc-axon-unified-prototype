@@ -46,7 +46,7 @@ ASSIGNMENT_EDIT_FIELDS = {
     "supervisorUpn",
 }
 INPUT_ALIASES = {
-    "email": {"email", "email address", "mail", "user email", "work email", "upn", "userprincipalname"},
+    "email": {"email", "email address", "mail", "user email", "work email"},
     "role": {"role", "axon role", "user role"},
     "groupName": {"group", "group name", "axon group", "axon group name", "organizational group"},
     "externalId": {"external id", "externalid", "employee id", "employeeid", "directory id", "object id"},
@@ -221,6 +221,12 @@ def _lookup_value(row: dict[str, Any], *names: str) -> str:
     return ""
 
 
+def _first_phone(value: Any) -> str:
+    if isinstance(value, list):
+        return next((str(item).strip() for item in value if str(item or "").strip()), "")
+    return str(value or "").strip()
+
+
 class DirectoryProvider:
     name = "directory"
 
@@ -236,7 +242,7 @@ class RowDirectoryProvider(DirectoryProvider):
     def resolve(self, emails: list[str]) -> dict[str, dict[str, Any]]:
         by_email = {}
         for row in self.rows:
-            email = normalize_email(_lookup_value(row, "email", "mail", "userPrincipalName", "upn"))
+            email = normalize_email(_lookup_value(row, "email", "mail"))
             if email:
                 by_email[email] = row
         return {email: by_email[email] for email in emails if email in by_email}
@@ -253,6 +259,14 @@ class SyntheticDirectoryProvider(DirectoryProvider):
             first = (parts[0] if parts else f"Test{index}").title()
             last = (parts[-1] if len(parts) > 1 else "User").title()
             resolved[email] = {
+                "mail": email,
+                "userPrincipalName": email,
+                "mailNickname": local,
+                "givenName": first,
+                "surname": last,
+                "accountEnabled": True,
+                "officeLocation": "Prototype Test Location",
+                "department": "TEST",
                 "externalId": f"SYNTH-{value_hash(email)[:12].upper()}",
                 "badgeNumber": f"T{index:05d}",
                 "firstName": first,
@@ -285,18 +299,31 @@ class EntraDelegatedProvider(DirectoryProvider):
 
     def resolve(self, emails: list[str]) -> dict[str, dict[str, Any]]:
         result = {}
-        select = "id,mail,userPrincipalName,employeeId,givenName,surname,accountEnabled,officeLocation,jobTitle,businessPhones,mobilePhone"
+        select = "id,mail,userPrincipalName,mailNickname,givenName,surname,accountEnabled,officeLocation,jobTitle,department,businessPhones,mobilePhone"
         for email in emails:
-            url = "https://graph.microsoft.com/v1.0/users/" + urllib.parse.quote(email, safe="") + "?$select=" + select
+            escaped_email = email.replace("'", "''")
+            query = urllib.parse.urlencode({"$filter": f"mail eq '{escaped_email}'", "$select": select, "$top": "2"})
+            url = "https://graph.microsoft.com/v1.0/users?" + query
             request = urllib.request.Request(url, headers={"Authorization": "Bearer " + self.access_token, "Accept": "application/json"})
             try:
                 with urllib.request.urlopen(request, timeout=self.timeout) as response:
-                    data = json.loads(response.read().decode("utf-8"))
+                    payload = json.loads(response.read().decode("utf-8"))
             except urllib.error.HTTPError as exc:
-                if exc.code == 404:
-                    continue
                 raise WorkflowError(f"Microsoft Graph could not resolve {email} (HTTP {exc.code}).") from exc
-            manager_url = "https://graph.microsoft.com/v1.0/users/" + urllib.parse.quote(email, safe="") + "/manager?$select=mail,userPrincipalName"
+
+            candidates = payload.get("value", []) if isinstance(payload, dict) else []
+            exact_matches = [item for item in candidates if isinstance(item, dict) and normalize_email(item.get("mail")) == email]
+            if not exact_matches:
+                continue
+            if len(exact_matches) > 1:
+                raise WorkflowError(f"Microsoft Graph returned more than one exact mail match for {email}.")
+
+            data = exact_matches[0]
+            object_id = str(data.get("id") or "").strip()
+            if not object_id:
+                raise WorkflowError(f"Microsoft Graph returned an exact mail match for {email} without an object ID.")
+
+            manager_url = "https://graph.microsoft.com/v1.0/users/" + urllib.parse.quote(object_id, safe="") + "/manager?$select=mail,userPrincipalName"
             manager_request = urllib.request.Request(manager_url, headers={"Authorization": "Bearer " + self.access_token, "Accept": "application/json"})
             try:
                 with urllib.request.urlopen(manager_request, timeout=self.timeout) as response:
@@ -306,6 +333,22 @@ class EntraDelegatedProvider(DirectoryProvider):
             except urllib.error.HTTPError as exc:
                 if exc.code not in {404}:
                     raise WorkflowError(f"Microsoft Graph could not read the manager for {email} (HTTP {exc.code}).") from exc
+
+            upn = str(data.get("userPrincipalName") or "").strip()
+            alias = str(data.get("mailNickname") or "").strip()
+            data.update({
+                "externalId": upn,
+                "upn": upn,
+                "badgeNumber": alias,
+                "username": alias,
+                "firstName": str(data.get("givenName") or "").strip(),
+                "lastName": str(data.get("surname") or "").strip(),
+                "directoryAccountStatus": data.get("accountEnabled"),
+                "directoryLocation": str(data.get("officeLocation") or "").strip(),
+                "component": str(data.get("department") or "").strip(),
+                "phone": str(data.get("mobilePhone") or "").strip() or _first_phone(data.get("businessPhones")),
+                "directoryMatchMethod": "Exact mail",
+            })
             result[email] = data
         return result
 
@@ -474,15 +517,27 @@ def enrich_rows(workspace: SharedWorkspace, intake_rows: list[dict[str, str]], p
         if group_error:
             blockers.append(group_error)
         existing = existing_users.get(email)
-        external_id = _governed_directory_value(workspace, source, "External ID", "externalId", "id", "employeeId")
-        badge_number = _governed_directory_value(workspace, source, "Badge Number", "badgeNumber", "employeeNumber", "employeeId", "badge")
+        upn = _governed_directory_value(workspace, source, "UPN", "upn", "userPrincipalName")
+        external_id = _governed_directory_value(workspace, source, "External ID", "externalId", "userPrincipalName", "upn")
+        badge_number = _governed_directory_value(workspace, source, "Badge Number", "badgeNumber", "mailNickname")
         first_name = _governed_directory_value(workspace, source, "First Name", "firstName", "givenName")
         last_name = _governed_directory_value(workspace, source, "Last Name", "lastName", "surname")
-        username = _governed_directory_value(workspace, source, "Username", "username", "userPrincipalName", "upn") or email
+        username = _governed_directory_value(workspace, source, "Username", "username", "mailNickname")
+        for label, value in (
+            ("UPN", upn),
+            ("External ID", external_id),
+            ("Badge Number", badge_number),
+            ("First Name", first_name),
+            ("Last Name", last_name),
+            ("UserName", username),
+        ):
+            if not value:
+                blockers.append(f"{label} was not returned by the directory mapping.")
         row = {
             "rowId": f"ROW-{index:04d}-{uuid.uuid4().hex[:6]}",
             "intakeOrder": index,
             "email": email,
+            "upn": upn,
             "role": role,
             "groupNameOverride": requested_group,
             "externalId": external_id,
@@ -674,7 +729,7 @@ def export_run_package(run: dict[str, Any], destination: Path) -> Path:
     output = destination / package_name
     with zipfile.ZipFile(output, "w", compression=zipfile.ZIP_DEFLATED) as archive:
         enriched = io.StringIO(newline="")
-        roster_headers = ["rowId", "email", "externalId", "badgeNumber", "firstName", "lastName", "status", "username", "role", "supervisorEmail", "supervisorUpn", "directoryAccountStatus", "directoryLocation", "location", "personnelAor", "component", "jobTitle", "jobCategory", "groupName", "groupExternalId", "membershipType", "validationState"]
+        roster_headers = ["rowId", "email", "upn", "externalId", "badgeNumber", "firstName", "lastName", "status", "username", "role", "supervisorEmail", "supervisorUpn", "directoryAccountStatus", "directoryLocation", "location", "personnelAor", "component", "jobTitle", "jobCategory", "groupName", "groupExternalId", "membershipType", "validationState"]
         writer = csv.DictWriter(enriched, fieldnames=roster_headers, lineterminator="\r\n", extrasaction="ignore")
         writer.writeheader()
         for row in run["rows"]:

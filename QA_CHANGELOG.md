@@ -4,7 +4,7 @@
 
 | Area | Result | Evidence |
 |---|---|---|
-| Shared workspace/workflow unit tests | PASS | 8 tests: enrichment, strict fields, chunk boundaries, filtered/full snapshots, refresh conflict, revision conflict, XLSX formula non-execution, overlay confirmation, guarded purge, and audit-chain checks across combined cases |
+| Shared workspace/workflow unit tests | PASS | 9 tests: enrichment, exact-mail Entra resolution, distinct Email/UPN mapping, strict fields, chunk boundaries, filtered/full snapshots, refresh conflict, revision conflict, XLSX formula non-execution, overlay confirmation, guarded purge, and audit-chain checks across combined cases |
 | Provisioning backend regression | PASS | 30 tests |
 | Geographic backend regression | PASS | 23 tests |
 | Provisioning UI production build | PASS | Vite build completed |
@@ -40,6 +40,17 @@ Distribution-package counts and archive hashes remain with the preserved local p
 - Shared baseline persistence, resource lease conflict, and filtered Devices isolation.
 - Governed editing, revision checks, review evidence, CSV BOM projection compatibility, source hashes, and formula-prefix rejection.
 - Tokenized local session, loopback-only binding, credential redaction/clearing, and automatic port selection.
+
+## Entra delegated-read mapping correction
+
+- Replaced the incorrect `/users/{email}` assumption with an exact Entra `mail` query so organizational Email and UPN can remain different.
+- Manager reads now use the returned Entra object ID.
+- Added `mailNickname` and `department` to the minimum-necessary Graph projection.
+- Mapped UPN and External ID to `userPrincipalName`; mapped UserName and Badge Number to `mailNickname`; retained Email from `mail` without UPN substitution.
+- Confirmed `givenName`, `surname`, `jobTitle`, and `officeLocation` mappings; mapped Component from `department`.
+- Kept proposed Axon Status fixed at `Active` while retaining `accountEnabled` as separate directory state.
+- Added explicit blockers when UPN, External ID, Badge Number, names, or UserName are missing.
+- Added a mocked delegated-read regression test proving the lookup URL, requested properties, manager-object-ID call, mapped roster row, generated Axon record, and business-phone fallback without transmitting credentials.
 
 ## Changes from V3.0.1
 
