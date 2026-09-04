@@ -40,6 +40,7 @@ export const localApi = {
   session: () => request("/api/session"),
   config: () => request("/api/config"),
   workspace: () => request("/api/workspace/status"),
+  groupOptions: () => request("/api/catalogs/groups"),
   startRefresh: (values) => request("/api/workspace/refresh", { method: "POST", body: JSON.stringify(values) }),
   refreshStatus: (jobId) => request(`/api/workspace/refresh/${encodeURIComponent(jobId)}`),
   cancelRefresh: (jobId) => request(`/api/workspace/refresh/${encodeURIComponent(jobId)}/cancel`, { method: "POST", body: "{}" }),

@@ -26,18 +26,46 @@ function formatTime(value) {
   return Number.isNaN(date.getTime()) ? value : date.toLocaleString();
 }
 
-function IntakeGrid({ rows, setRows, disabled }) {
+function groupOptionLabel(group) {
+  const context = [group.component, group.aor, group.tier].filter(Boolean).join(" · ");
+  return context ? `${group.name} — ${context}` : group.name;
+}
+
+function GroupNameSelect({ value, onChange, options, disabled, ariaLabel }) {
+  const names = new Set(options.map((option) => option.name));
+  return <select aria-label={ariaLabel} value={value || ""} onChange={(event) => onChange(event.target.value)} disabled={disabled}>
+    <option value="">No Group selection</option>
+    {value && !names.has(value) && <option value={value}>{value} — not in current Group pool</option>}
+    {options.map((option) => <option value={option.name} key={`${option.externalId}:${option.name}`}>{groupOptionLabel(option)}</option>)}
+  </select>;
+}
+
+function ExactGroupSelect({ row, draft, update, options }) {
+  const currentExternalId = draft?.groupExternalId ?? row.groupExternalId ?? "";
+  function select(externalId) {
+    const option = options.find((item) => item.externalId === externalId);
+    update(row.rowId, "groupExternalId", externalId);
+    update(row.rowId, "groupName", option?.name || "");
+  }
+  return <div className="group-picker"><select aria-label={`Group for ${row.email}`} value={currentExternalId} onChange={(event) => select(event.target.value)}>
+    <option value="">No Group assignment</option>
+    {currentExternalId && !options.some((option) => option.externalId === currentExternalId) && <option value={currentExternalId}>{row.groupName || "Current Group"} — no longer in pool</option>}
+    {options.map((option) => <option value={option.externalId} key={`${option.externalId}:${option.name}`}>{groupOptionLabel(option)}{option.name === row.recommendedGroupName ? " — recommended" : ""}</option>)}
+  </select><small>{row.recommendedGroupName ? `Recommendation: ${row.recommendedGroupName}` : "No complete governed recommendation"}</small></div>;
+}
+
+function IntakeGrid({ rows, setRows, disabled, groupOptions }) {
   function update(index, key, value) {
     setRows((current) => current.map((row, rowIndex) => (rowIndex === index ? { ...row, [key]: value } : row)));
   }
   return <div className="intake-grid-wrap">
     <table className="intake-grid">
-      <thead><tr><th>#</th><th>Email <span>required</span></th><th>Role <span>required</span></th><th>Group Name <span>optional override</span></th><th /></tr></thead>
+      <thead><tr><th>#</th><th>Email <span>required</span></th><th>Role <span>required</span></th><th>Group Name <span>optional; blank creates no Group relationship</span></th><th /></tr></thead>
       <tbody>{rows.map((row, index) => <tr key={row.id}>
         <td>{index + 1}</td>
         <td><input aria-label={`Email row ${index + 1}`} value={row.Email} onChange={(event) => update(index, "Email", event.target.value)} disabled={disabled} /></td>
         <td><input aria-label={`Role row ${index + 1}`} value={row.Role} onChange={(event) => update(index, "Role", event.target.value)} disabled={disabled} /></td>
-        <td><input aria-label={`Group Name row ${index + 1}`} value={row["Group Name"]} onChange={(event) => update(index, "Group Name", event.target.value)} disabled={disabled} /></td>
+        <td><GroupNameSelect ariaLabel={`Group Name row ${index + 1}`} value={row["Group Name"]} onChange={(value) => update(index, "Group Name", value)} options={groupOptions} disabled={disabled} /></td>
         <td><button className="icon-button" type="button" onClick={() => setRows((current) => current.filter((_, rowIndex) => rowIndex !== index))} disabled={disabled || rows.length === 1} aria-label={`Remove row ${index + 1}`}>×</button></td>
       </tr>)}</tbody>
     </table>
@@ -59,13 +87,14 @@ function SummaryCards({ validation }) {
     ["New", validation?.createCount || 0, "blue"],
     ["Existing updates", validation?.updateCount || 0, "purple"],
     ["Unchanged", validation?.unchangedCount || 0, "neutral"],
+    ["Warnings", validation?.warningCount || 0, validation?.warningCount ? "amber" : "neutral"],
     ["Blocked", validation?.blockerCount || 0, validation?.blockerCount ? "red" : "green"],
   ];
   return <div className="summary-cards">{cards.map(([label, value, tone]) => <article className={`metric ${tone}`} key={label}><span>{label}</span><strong>{value.toLocaleString()}</strong></article>)}</div>;
 }
 
-function AssignmentTable({ run, onlyExceptions = false, drafts, setDrafts, selected, setSelected }) {
-  const rows = onlyExceptions ? run.rows.filter((row) => row.validationState === "Blocked") : run.rows;
+function AssignmentTable({ run, onlyExceptions = false, drafts, setDrafts, selected, setSelected, groupOptions }) {
+  const rows = onlyExceptions ? run.rows.filter((row) => row.validationState === "Blocked" || row.warnings?.length) : run.rows;
   function update(rowId, field, value) {
     setDrafts((current) => ({ ...current, [rowId]: { ...(current[rowId] || {}), [field]: value } }));
   }
@@ -74,8 +103,8 @@ function AssignmentTable({ run, onlyExceptions = false, drafts, setDrafts, selec
     <tbody>{rows.map((row) => <tr key={row.rowId} className={row.validationState === "Blocked" ? "blocked-row" : "ready-row"}>
       <td><input type="checkbox" aria-label={`Select ${row.email}`} checked={selected.has(row.rowId)} onChange={(event) => setSelected((current) => { const next = new Set(current); if (event.target.checked) next.add(row.rowId); else next.delete(row.rowId); return next; })} /></td>
       <td className="identity-cell"><strong>{row.firstName} {row.lastName}</strong><span>Email: {row.email}</span><small>UPN: {row.upn || "missing"} · External ID: {row.externalId || "missing"}</small><small>Badge / UserName: {row.badgeNumber || "missing"} · {row.username || "missing"}</small><small>{row.directoryAccountStatus} · {row.component || "No component"} · {row.jobTitle || "No job title"}</small></td>
-      <td><span className={`status ${row.validationState === "Blocked" ? "bad" : "good"}`}>{row.validationState}</span>{row.blockers?.map((item) => <small className="blocker" key={item}>{item}</small>)}</td>
-      {ASSIGNMENT_FIELDS.map(([field]) => <td key={field}><input aria-label={`${field} for ${row.email}`} value={drafts[row.rowId]?.[field] ?? row[field] ?? ""} onChange={(event) => update(row.rowId, field, event.target.value)} /></td>)}
+      <td><span className={`status ${row.validationState === "Blocked" ? "bad" : row.warnings?.length ? "warn" : "good"}`}>{row.validationState === "Blocked" ? "Blocked" : row.warnings?.length ? "Ready with warnings" : "Ready"}</span>{row.blockers?.map((item) => <small className="blocker" key={item}>{item}</small>)}{row.warnings?.map((item) => <small className="warning-note" key={item}>{item}</small>)}</td>
+      {ASSIGNMENT_FIELDS.map(([field]) => <td key={field}>{field === "groupName" ? <ExactGroupSelect row={row} draft={drafts[row.rowId]} update={update} options={groupOptions} /> : <input aria-label={`${field} for ${row.email}`} value={drafts[row.rowId]?.[field] ?? row[field] ?? ""} onChange={(event) => update(row.rowId, field, event.target.value)} />}</td>)}
     </tr>)}</tbody>
   </table>{!rows.length && <div className="empty-state">No records in this view.</div>}</div>;
 }
@@ -130,6 +159,7 @@ export function App() {
   const [workspace, setWorkspace] = useState({ workspaceRevision: 0, snapshots: [], pendingCounts: {} });
   const [session, setSession] = useState({ configured: false, partnerHint: "" });
   const [config, setConfig] = useState({ agencyBaseUrl: "", timeoutSeconds: 90, writeOperationsEnabled: false, groupFileFieldConfirmed: false });
+  const [groupOptions, setGroupOptions] = useState([]);
   const [step, setStep] = useState(0);
   const [rows, setRows] = useState([{ id: crypto.randomUUID(), Email: "", Role: "", "Group Name": "" }]);
   const [intakeFile, setIntakeFile] = useState(null);
@@ -155,8 +185,8 @@ export function App() {
   const changedRows = useMemo(() => Object.entries(drafts).filter(([, changes]) => Object.keys(changes).length), [drafts]);
 
   useEffect(() => {
-    Promise.all([localApi.workspace(), localApi.latestRun(), localApi.session(), localApi.config()]).then(([workspaceData, runData, sessionData, configData]) => {
-      setWorkspace(workspaceData); setRun(runData.run); setSession(sessionData); setConfig(configData);
+    Promise.all([localApi.workspace(), localApi.latestRun(), localApi.session(), localApi.config(), localApi.groupOptions()]).then(([workspaceData, runData, sessionData, configData, groupData]) => {
+      setWorkspace(workspaceData); setRun(runData.run); setSession(sessionData); setConfig(configData); setGroupOptions(groupData.groups || []);
       if (runData.run) setStep(stepForRun(runData.run));
     }).catch((requestError) => setError(requestError.message));
   }, []);
@@ -167,6 +197,7 @@ export function App() {
         const next = await localApi.workspace();
         if (next.workspaceRevision !== workspace.workspaceRevision) {
           setWorkspace(next);
+          setGroupOptions((await localApi.groupOptions()).groups || []);
           if (run?.runId && !changedRows.length) {
             const refreshed = await localApi.getRun(run.runId);
             setRun(refreshed.run);
@@ -241,7 +272,7 @@ export function App() {
       if (result.run?.needsColumnMapping) {
         setDetection(result.run); setStep(0); setMessage("Confirm the file column mapping, then run enrichment again.");
       } else {
-        setRun(result.run); setStep(stepForRun(result.run)); setDrafts({}); setSelected(new Set()); setMessage(result.run.validation.valid ? "Enrichment and validation passed. Preview is ready." : "Enrichment finished with exceptions requiring review.");
+        setRun(result.run); setStep(stepForRun(result.run)); setDrafts({}); setSelected(new Set()); setMessage(result.run.validation.valid ? (result.run.validation.warningCount ? "User import validation passed with optional warnings. Any new mapping values were queued for review; Preview is ready." : "Enrichment and validation passed. Preview is ready.") : "Enrichment finished with exceptions requiring review.");
         setWorkspace(await localApi.workspace());
       }
     } catch (requestError) { setError(requestError.message); }
@@ -261,8 +292,12 @@ export function App() {
   }
 
   function applyBulk() {
-    if (!selected.size || !bulkValue.trim()) { setError("Select at least one user and enter a bulk value."); return; }
-    saveEdits([...selected].map((rowId) => ({ rowId, changes: { [bulkField]: bulkValue } })));
+    if (!selected.size || (bulkField !== "groupName" && !bulkValue.trim())) { setError("Select at least one user and enter a bulk value. Group may be intentionally left blank."); return; }
+    const group = groupOptions.find((option) => option.externalId === bulkValue);
+    const changes = bulkField === "groupName"
+      ? { groupName: group?.name || "", groupExternalId: group?.externalId || "" }
+      : { [bulkField]: bulkValue };
+    saveEdits([...selected].map((rowId) => ({ rowId, changes })));
   }
 
   async function approve() {
@@ -317,10 +352,10 @@ export function App() {
       {error && <div className="banner error" role="alert">{error}<button type="button" onClick={() => setError("")}>×</button></div>}
 
       {step === 0 && <section className="panel">
-        <div className="panel-heading"><div><span className="kicker">Step 1</span><h2>Add users</h2><p>Start with Email and Role. Group Name is an optional friendly override; external Group IDs are resolved internally.</p></div>{run && <button className="secondary" type="button" onClick={newRun}>Start another run</button>}</div>
+        <div className="panel-heading"><div><span className="kicker">Step 1</span><h2>Add users</h2><p>Start with Email and Role. Group Name is optional; leave it blank for no Group assignment. Any governed recommendation appears in Preview for deliberate selection.</p></div>{run && <button className="secondary" type="button" onClick={newRun}>Start another run</button>}</div>
         <div className="intake-choice"><div className={!intakeFile ? "choice active" : "choice"}><h3>Paste or type users</h3><p>Paste rows from Excel or add them in the grid.</p></div><label className={intakeFile ? "choice active upload" : "choice upload"}><h3>Upload users</h3><p>Flexible CSV or XLSX headers are accepted.</p><input type="file" accept=".csv,.xlsx" onChange={(event) => event.target.files?.[0] && chooseIntakeFile(event.target.files[0])} /><span>{intakeFile ? `${intakeFile.name} · ${intakeFile.detail}` : "Choose .csv or .xlsx"}</span></label></div>
         {intakeFile && <button className="text-button" type="button" onClick={() => { setIntakeFile(null); setDetection(null); }}>Use paste grid instead</button>}
-        {!intakeFile && <IntakeGrid rows={rows} setRows={setRows} disabled={busy} />}
+        {!intakeFile && <IntakeGrid rows={rows} setRows={setRows} disabled={busy} groupOptions={groupOptions} />}
         <ColumnMapper detection={detection} mapping={columnMapping} setMapping={setColumnMapping} />
         <div className="provider-box"><h3>Directory enrichment source</h3><div className="provider-options">
           <label><input type="radio" name="provider" checked={provider === "directory-file"} onChange={() => setProvider("directory-file")} /> Directory CSV/XLSX export</label>
@@ -333,15 +368,15 @@ export function App() {
       </section>}
 
       {step === 1 && run && <section className="panel wide-panel"><div className="panel-heading"><div><span className="kicker">Step 2</span><h2>Review exceptions</h2><p>Identity values remain read-only. Correct source identity through reconciliation; edit only governed assignment fields here.</p></div><button className="secondary" type="button" onClick={() => setStep(0)}>Return to intake</button></div><SummaryCards validation={run.validation} />
-        <div className="bulk-bar"><strong>Bulk edit {selected.size} selected</strong><select value={bulkField} onChange={(event) => setBulkField(event.target.value)}>{ASSIGNMENT_FIELDS.map(([key, label]) => <option value={key} key={key}>{label}</option>)}</select><input value={bulkValue} onChange={(event) => setBulkValue(event.target.value)} placeholder="New governed value" /><input value={changeReason} onChange={(event) => setChangeReason(event.target.value)} placeholder="Required shared change reason" /><button className="secondary" type="button" onClick={applyBulk} disabled={busy}>Apply and revalidate</button></div>
-        <AssignmentTable run={run} onlyExceptions drafts={drafts} setDrafts={setDrafts} selected={selected} setSelected={setSelected} />
+        <div className="bulk-bar"><strong>Bulk edit {selected.size} selected</strong><select value={bulkField} onChange={(event) => { setBulkField(event.target.value); setBulkValue(""); }}>{ASSIGNMENT_FIELDS.map(([key, label]) => <option value={key} key={key}>{label}</option>)}</select>{bulkField === "groupName" ? <select aria-label="Bulk Group" value={bulkValue} onChange={(event) => setBulkValue(event.target.value)} disabled={busy}><option value="">Clear Group assignment</option>{groupOptions.map((option) => <option value={option.externalId} key={`${option.externalId}:${option.name}`}>{groupOptionLabel(option)}</option>)}</select> : <input value={bulkValue} onChange={(event) => setBulkValue(event.target.value)} placeholder="New governed value" />}<input value={changeReason} onChange={(event) => setChangeReason(event.target.value)} placeholder="Required shared change reason" /><button className="secondary" type="button" onClick={applyBulk} disabled={busy}>Apply and revalidate</button></div>
+        <AssignmentTable run={run} onlyExceptions drafts={drafts} setDrafts={setDrafts} selected={selected} setSelected={setSelected} groupOptions={groupOptions} />
         <div className="action-row"><button className="primary" type="button" onClick={() => saveEdits()} disabled={busy || !changedRows.length}>{busy ? "Saving revision…" : `Save ${changedRows.length} edited row(s)`}</button>{run.validation.valid && <button className="secondary" type="button" onClick={() => setStep(2)}>Continue to preview</button>}<input className="reason" value={changeReason} onChange={(event) => setChangeReason(event.target.value)} placeholder="Required change reason" /></div><History run={run} />
       </section>}
 
       {step === 2 && run && <section className="panel wide-panel"><div className="panel-heading"><div><span className="kicker">Step 3</span><h2>Preview changes</h2><p>Review current Axon values against the proposed run. Saving any edit creates a new revision and clears prior approval.</p></div><button className="secondary" type="button" onClick={exportPackage}>Export optional review package</button></div><SummaryCards validation={run.validation} />
         {run.validation.blockerCount > 0 && <div className="callout danger"><strong>{run.validation.blockerCount} blocker(s) remain.</strong><button className="text-button" type="button" onClick={() => setStep(1)}>Review exceptions</button></div>}
         <div className="bulk-bar"><strong>Assignment-only edits</strong><span>{changedRows.length} row(s) changed</span><input value={changeReason} onChange={(event) => setChangeReason(event.target.value)} placeholder="Required change reason" /><button className="secondary" type="button" onClick={() => saveEdits()} disabled={busy || !changedRows.length}>Save revision</button></div>
-        <AssignmentTable run={run} drafts={drafts} setDrafts={setDrafts} selected={selected} setSelected={setSelected} />
+        <AssignmentTable run={run} drafts={drafts} setDrafts={setDrafts} selected={selected} setSelected={setSelected} groupOptions={groupOptions} />
         {run.validation.updateCount > 0 && <section className="account-review"><div><h3>{run.validation.updateCount} existing account update(s)</h3><p>Open the field-level review before approval. Approval is bound to this run revision and does not submit to Axon.</p></div><button className="secondary" type="button" onClick={() => setExistingReviewOpen((current) => !current)}>{existingReviewOpen ? "Close account review" : "Open existing-account review"}</button>{existingReviewOpen && <div className="difference-list">{run.rows.filter((row) => row.existingAccount && row.differences?.length).map((row) => <article key={row.rowId}><strong>{row.email}</strong>{row.differences.map((diff) => <p key={diff.field}><span>{diff.field}</span><del>{diff.current || "blank"}</del><ins>{diff.proposed || "blank"}</ins></p>)}</article>)}</div>}</section>}
         <div className="approval-dock"><div><strong>Revision {run.revision}</strong><span>User hash {run.generation.userHash?.slice(0, 12)} · Group hash {run.generation.groupHash?.slice(0, 12)}</span></div><button className="primary" type="button" onClick={approve} disabled={busy || !run.validation.valid || (run.validation.updateCount > 0 && !existingReviewOpen)}>{run.validation.updateCount > 0 ? `Approve ${run.validation.updateCount} account updates and continue` : "Approve preview and continue"}</button></div><History run={run} />
       </section>}
@@ -350,6 +385,6 @@ export function App() {
 
       {step === 4 && run && <section className="panel"><div className="panel-heading"><div><span className="kicker">Step 5</span><h2>Track results</h2><p>User and Group jobs are tracked separately. Group jobs remain locked until applicable user jobs complete.</p></div><button className="secondary" type="button" onClick={exportPackage}>Export current revision</button></div><div className={`run-state ${run.status === "Failed" ? "failed" : ""}`}><span>Run status</span><strong>{run.status}</strong><small>{run.runId} · Revision {run.revision}</small></div><div className="chunk-list detailed">{run.chunks?.map((chunk) => <div key={chunk.chunkId}><span>{chunk.chunkId}</span><strong>{chunk.status}</strong><em>{chunk.axonJobId ? `Axon job ${chunk.axonJobId}` : "Not submitted"}</em></div>)}</div><ConnectionPanel config={config} session={session} onSaved={(nextConfig, nextSession) => { setConfig(nextConfig); setSession(nextSession); }} /><div className="action-row"><button className="primary" type="button" onClick={track} disabled={busy || !session.configured}>{busy ? "Checking…" : "Check submitted job status"}</button>{run.chunks?.some((chunk) => chunk.status === "ready") && <button className="secondary" type="button" onClick={() => setStep(3)}>Submit next eligible chunk</button>}<button className="secondary" type="button" onClick={newRun}>Start another run</button></div><History run={run} /></section>}
     </main>
-    <footer><span>Shared baseline and pending overlay remain distinct.</span><span>Evidence Groups are unused; compatibility column stays blank.</span><span>One Axon Role and one default organizational Group per user.</span></footer>
+    <footer><span>Shared baseline and pending overlay remain distinct.</span><span>Evidence Groups are unused; compatibility column stays blank.</span><span>One Axon Role is required; the organizational Group assignment may be left blank.</span></footer>
   </div>;
 }

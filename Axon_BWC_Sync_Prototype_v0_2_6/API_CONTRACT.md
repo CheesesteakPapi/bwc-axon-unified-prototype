@@ -107,9 +107,9 @@ The supplied User Import, import-job status, and import-job result documents wer
 
 ## Shared local governance contract — V2.3.5
 
-In this sanitized source repository, configured crosswalk and status paths resolve from `config.example.json` to package-level synthetic `governance_starters/`. Relative paths resolve from the configuration file's folder instead of the caller's current directory. Runtime-reviewed data belongs in the per-user application workspace and must not be committed.
+In this sanitized source repository, configured crosswalk and status paths resolve from `config.example.json` to package-level synthetic `governance_starters/`. Relative paths resolve from the configuration file's folder instead of the caller's current directory. Application-initiated syncs export current SQLite governance into temporary sync-only CSVs; the file-governed status map remains a direct runtime input. Runtime-reviewed data belongs in the per-user application workspace and must not be committed.
 
-The synchronization prototype reads governed mappings but never writes Axon records. The local Geographic Operations UI remains the primary editor for the shared working files.
+The synchronization prototype reads governed mappings but never writes Axon records. Geographic Operations remains the primary editor for authoritative SQLite governance. The files referenced by `config.example.json` are synthetic standalone-CLI fallbacks, not the operational source of truth.
 
 ## Additional current documentation reviewed for V2.3.5
 

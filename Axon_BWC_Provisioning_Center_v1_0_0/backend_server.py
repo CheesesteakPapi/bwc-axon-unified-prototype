@@ -10,6 +10,7 @@ from __future__ import annotations
 import argparse
 import base64
 import binascii
+import copy
 import csv
 import errno
 import hmac
@@ -48,6 +49,7 @@ from provisioning_workflow import (
     edit_rows,
     enrich_rows,
     export_run_package,
+    group_options,
     parse_intake_file,
     write_csv,
 )
@@ -183,6 +185,31 @@ def safe_name(value: str, default: str = "upload.csv") -> str:
     return cleaned or default
 
 
+def materialize_sync_config(state: Any, config: dict[str, Any], label: str) -> Path:
+    """Create a temporary sync config backed by current shared-workspace projections."""
+    runtime = copy.deepcopy(config)
+    projection_root = state.root / "governance-projections" / safe_name(label, uuid.uuid4().hex)
+    projection_root.mkdir(parents=True, exist_ok=True)
+    governed_paths = {
+        "device_home_crosswalk_csv": ("device_home_crosswalk_starter", "device_home_crosswalk_starter.csv"),
+        "axon_group_crosswalk_csv": ("axon_group_crosswalk_starter", "axon_group_crosswalk_starter.csv"),
+    }
+    for config_field, (dataset_key, file_name) in governed_paths.items():
+        export_path = projection_root / file_name
+        try:
+            state.workspace.export_governance_csv(dataset_key, export_path)
+            runtime[config_field] = str(export_path)
+        except KeyError:
+            pass
+    # The device status map is intentionally maintained as a reviewed file.
+    # Keep the runtime config pointed at that live file instead of exporting the
+    # stale one-time migration copy from SQLite.
+    runtime["device_status_map_csv"] = str(governance_root() / "device_status_map.csv")
+    config_path = projection_root / "config.json"
+    config_path.write_text(json.dumps(runtime, indent=2) + "\n", encoding="utf-8")
+    return config_path
+
+
 class SessionState:
     def __init__(self) -> None:
         test_token = (
@@ -249,7 +276,8 @@ class SessionState:
         job_id = uuid.uuid4().hex
         owner_id = f"provisioning-center-{os.getpid()}-{job_id}"
         refresh_id = self.workspace.acquire_refresh_lease(resource, owner_id, scope)
-        command = [sys.executable, str(BASE_DIR / "axon_sync.py"), "sync", "--config", str(CONFIG_PATH), "--resource", resource]
+        runtime_config_path = materialize_sync_config(self, config, f"refresh-{job_id}")
+        command = [sys.executable, str(BASE_DIR / "axon_sync.py"), "sync", "--config", str(runtime_config_path), "--resource", resource]
         if normalized_filters.get("model"):
             command.extend(["--device-model", normalized_filters["model"]])
         if normalized_filters.get("status2"):
@@ -1138,6 +1166,8 @@ def execute_operation(state: SessionState, body: dict[str, Any]) -> dict[str, An
         result_name = safe_name(f"{spec.command}_{values.get('job_id', 'results')}.json", "job_results.json")
         values["output"] = str(state.output_dir / result_name)
 
+    if spec.action == "sync":
+        values["config"] = str(materialize_sync_config(state, config, f"operation-{uuid.uuid4().hex}"))
     environment = state.credential_env()
     command = build_command(BASE_DIR, spec, values)
     creation_flags = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
@@ -1300,6 +1330,9 @@ class LocalAxonHandler(BaseHTTPRequestHandler):
             return
         if parsed.path == "/api/workspace/status":
             self._send_json(HTTPStatus.OK, {"success": True, **self.state.workspace.status()})
+            return
+        if parsed.path == "/api/catalogs/groups":
+            self._send_json(HTTPStatus.OK, {"success": True, "groups": group_options(self.state.workspace)})
             return
         refresh_match = re.fullmatch(r"/api/workspace/refresh/([^/]+)", parsed.path)
         if refresh_match:

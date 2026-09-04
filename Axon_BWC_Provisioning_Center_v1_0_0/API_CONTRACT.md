@@ -25,7 +25,7 @@ User import requires these headers in any order:
 EXTERNAL_ID,EMAIL,BADGE_NUMBER,FIRST_NAME,LAST_NAME,STATUS,USERNAME,ROLE,SUPERVISOR_EMAIL,LOCATION,EVIDENCE_GROUP_EXT_ID,PHONE
 ```
 
-`RANK` is optional. `EMAIL`, `USERNAME`, and `BADGE_NUMBER` must be unique. `ROLE`, `RANK`, `LOCATION`, and `SUPERVISOR_EMAIL` are reference values that require source-owner review before submission. The compatibility column `EVIDENCE_GROUP_EXT_ID` remains blank in generated files because BWC organizational assignments are handled separately through Axon Group entity rows.
+`RANK`, `LOCATION`, and `SUPERVISOR_EMAIL` may be blank. Job Title and Job Category are review metadata and are not user-import columns. `EMAIL`, `USERNAME`, and `BADGE_NUMBER` must be unique, and `ROLE` must resolve to the approved Role catalog. Populated reference values should retain their source/review basis. The compatibility column `EVIDENCE_GROUP_EXT_ID` remains blank in generated files because BWC organizational assignments are handled separately through optional Axon Group entity rows.
 
 The user-import CSV must be UTF-8 without a byte-order mark. V0.4.2 generates plain UTF-8 user files and treats a BOM as a validation error before submission. The Group entity encoding contract remains subject to confirmation with the authorized API documentation.
 

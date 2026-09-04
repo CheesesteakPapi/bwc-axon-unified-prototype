@@ -10,6 +10,7 @@ import csv
 import hashlib
 import json
 import os
+import re
 import sqlite3
 import threading
 import uuid
@@ -384,85 +385,197 @@ class SharedWorkspace:
         scope: dict[str, Any] | None = None,
         source: str = "Axon API",
     ) -> dict[str, Any]:
-        if not isinstance(rows, Sequence) or any(not isinstance(row, dict) for row in rows):
-            raise ValueError("Snapshot rows must be a sequence of objects.")
-        normalized_scope = scope or {"type": "full", "filters": {}}
-        if normalized_scope.get("type") not in {"full", "filtered"} or not isinstance(normalized_scope.get("filters", {}), dict):
-            raise ValueError("Snapshot scope must be full or filtered and contain an object of filters.")
-        if rows:
-            expected_schema = set(rows[0])
-            if not expected_schema or any(set(row) != expected_schema for row in rows):
-                raise ValueError("Snapshot rows must share one non-empty normalized schema.")
-        scope_key = value_hash(normalized_scope)
-        snapshot_id = uuid.uuid4().hex
-        pulled_at = utc_now()
-        content_hash = value_hash(list(rows))
+        return self.activate_snapshots_batch(
+            [{"resource": resource, "rows": rows, "scope": scope, "source": source}]
+        )[0]
+
+    def activate_snapshots_batch(
+        self,
+        entries: Sequence[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        """Validate, stage, and activate resource snapshots in one transaction.
+
+        Every resource activation retains the single-snapshot behavior, while
+        the batch advances the shared workspace revision only once. If any
+        staging, relationship, overlay-confirmation, or audit operation fails,
+        no snapshot in the batch is activated.
+        """
+        if not isinstance(entries, Sequence) or isinstance(entries, (str, bytes)) or not entries:
+            raise ValueError("Snapshot batch entries must be a non-empty sequence of objects.")
+
+        prepared: list[dict[str, Any]] = []
+        for entry in entries:
+            if not isinstance(entry, dict):
+                raise ValueError("Snapshot batch entries must be objects.")
+            if "resource" not in entry or "rows" not in entry:
+                raise ValueError("Each snapshot batch entry must contain resource and rows.")
+            resource = entry["resource"]
+            rows = entry["rows"]
+            if not isinstance(rows, Sequence) or isinstance(rows, (str, bytes)) or any(not isinstance(row, dict) for row in rows):
+                raise ValueError("Snapshot rows must be a sequence of objects.")
+            normalized_rows = list(rows)
+            normalized_scope = entry.get("scope") or {"type": "full", "filters": {}}
+            if normalized_scope.get("type") not in {"full", "filtered"} or not isinstance(normalized_scope.get("filters", {}), dict):
+                raise ValueError("Snapshot scope must be full or filtered and contain an object of filters.")
+            if normalized_rows:
+                expected_schema = set(normalized_rows[0])
+                if not expected_schema or any(set(row) != expected_schema for row in normalized_rows):
+                    raise ValueError("Snapshot rows must share one non-empty normalized schema.")
+            prepared.append(
+                {
+                    "resource": resource,
+                    "rows": normalized_rows,
+                    "scope": normalized_scope,
+                    "source": entry.get("source", "Axon API"),
+                    "scopeKey": value_hash(normalized_scope),
+                    "snapshotId": uuid.uuid4().hex,
+                    "pulledAt": utc_now(),
+                    "sha256": value_hash(normalized_rows),
+                }
+            )
+
         with self.connection() as db:
             db.execute("BEGIN IMMEDIATE")
-            db.execute(
-                "INSERT INTO resource_snapshots(snapshot_id,resource,scope_key,scope_json,status,row_count,content_hash,pulled_at,source) VALUES(?,?,?,?,?,?,?,?,?)",
-                (snapshot_id, resource, scope_key, canonical_json(normalized_scope), "staging", len(rows), content_hash, pulled_at, source),
-            )
-            for index, row in enumerate(rows):
-                key = str(row.get("id") or row.get("ID") or row.get("External ID") or row.get("EXTERNAL_ID") or index)
-                db.execute(
-                    "INSERT INTO snapshot_rows(snapshot_id,row_index,record_key,payload_json) VALUES(?,?,?,?)",
-                    (snapshot_id, index, key, canonical_json(row)),
-                )
-                if resource == "Devices":
-                    user_id = str(row.get("Assigned User ID") or row.get("ownerId") or row.get("userId") or "").strip()
+            try:
+                for item in prepared:
                     db.execute(
-                        "INSERT INTO user_device_relationships VALUES(?,?,?,?,?,?,?,?)",
+                        "INSERT INTO resource_snapshots(snapshot_id,resource,scope_key,scope_json,status,row_count,content_hash,pulled_at,source) VALUES(?,?,?,?,?,?,?,?,?)",
                         (
-                            snapshot_id,
-                            index,
-                            str(row.get("Axon Device ID") or row.get("id") or row.get("Serial Number") or index),
-                            user_id,
-                            "Assigned" if user_id else "Unassigned",
-                            str(row.get("Device Status") or row.get("status2") or ""),
-                            str(row.get("Device Model") or row.get("model") or ""),
-                            str(row.get("Device Home Name (API)") or row.get("homeId") or ""),
+                            item["snapshotId"],
+                            item["resource"],
+                            item["scopeKey"],
+                            canonical_json(item["scope"]),
+                            "staging",
+                            len(item["rows"]),
+                            item["sha256"],
+                            item["pulledAt"],
+                            item["source"],
                         ),
                     )
-            inserted = db.execute("SELECT COUNT(*) FROM snapshot_rows WHERE snapshot_id=?", (snapshot_id,)).fetchone()[0]
-            if inserted != len(rows):
+                    self._stage_snapshot_rows(db, item["snapshotId"], item["resource"], item["rows"])
+                    inserted = db.execute(
+                        "SELECT COUNT(*) FROM snapshot_rows WHERE snapshot_id=?",
+                        (item["snapshotId"],),
+                    ).fetchone()[0]
+                    if inserted != len(item["rows"]):
+                        raise RuntimeError("Staged snapshot row count did not validate.")
+
+                activated_at = utc_now()
+                for item in prepared:
+                    db.execute(
+                        "UPDATE resource_snapshots SET status='superseded',superseded_at=? WHERE resource=? AND scope_key=? AND status='active'",
+                        (activated_at, item["resource"], item["scopeKey"]),
+                    )
+                    db.execute(
+                        "UPDATE resource_snapshots SET status='active',activated_at=? WHERE snapshot_id=?",
+                        (activated_at, item["snapshotId"]),
+                    )
+                    item["confirmedUserOverlays"] = self._confirm_user_overlays(
+                        db,
+                        item["resource"],
+                        item["scope"],
+                        item["rows"],
+                        activated_at,
+                    )
+
+                revision = self._increment_revision(db)
+                for item in prepared:
+                    self._audit_in_connection(
+                        db,
+                        "snapshot-service",
+                        "snapshot-activated",
+                        "success",
+                        {
+                            "resource": item["resource"],
+                            "scope": item["scope"],
+                            "rows": len(item["rows"]),
+                            "snapshotId": item["snapshotId"],
+                            "revision": revision,
+                            "confirmedUserOverlays": item["confirmedUserOverlays"],
+                        },
+                    )
+                db.commit()
+            except Exception:
                 db.rollback()
-                raise RuntimeError("Staged snapshot row count did not validate.")
-            now = utc_now()
+                raise
+
+        return [
+            {
+                "snapshotId": item["snapshotId"],
+                "resource": item["resource"],
+                "scope": item["scope"],
+                "rowCount": len(item["rows"]),
+                "sha256": item["sha256"],
+                "activatedAt": activated_at,
+                "workspaceRevision": revision,
+            }
+            for item in prepared
+        ]
+
+    def _stage_snapshot_rows(
+        self,
+        db: sqlite3.Connection,
+        snapshot_id: str,
+        resource: str,
+        rows: Sequence[dict[str, Any]],
+    ) -> None:
+        for index, row in enumerate(rows):
+            key = str(row.get("id") or row.get("ID") or row.get("External ID") or row.get("EXTERNAL_ID") or index)
             db.execute(
-                "UPDATE resource_snapshots SET status='superseded',superseded_at=? WHERE resource=? AND scope_key=? AND status='active'",
-                (now, resource, scope_key),
+                "INSERT INTO snapshot_rows(snapshot_id,row_index,record_key,payload_json) VALUES(?,?,?,?)",
+                (snapshot_id, index, key, canonical_json(row)),
             )
-            db.execute(
-                "UPDATE resource_snapshots SET status='active',activated_at=? WHERE snapshot_id=?",
-                (now, snapshot_id),
-            )
-            confirmed_overlay_count = 0
-            if resource == "Users" and normalized_scope.get("type") == "full":
-                snapshot_emails = {
-                    str(row.get("Email") or row.get("EMAIL") or row.get("email") or "").strip().casefold()
-                    for row in rows
-                    if str(row.get("Email") or row.get("EMAIL") or row.get("email") or "").strip()
-                }
-                snapshot_external_ids = {
-                    str(row.get("External ID") or row.get("EXTERNAL_ID") or row.get("externalId") or "").strip().casefold()
-                    for row in rows
-                    if str(row.get("External ID") or row.get("EXTERNAL_ID") or row.get("externalId") or "").strip()
-                }
-                overlays = db.execute(
-                    "SELECT overlay_id,payload_json FROM pending_overlays WHERE entity_type='User' AND state='Submitted—awaiting confirmation'"
-                ).fetchall()
-                for overlay in overlays:
-                    payload = json.loads(overlay["payload_json"])
-                    email = str(payload.get("email") or "").strip().casefold()
-                    external_id = str(payload.get("externalId") or "").strip().casefold()
-                    if (email and email in snapshot_emails) or (external_id and external_id in snapshot_external_ids):
-                        db.execute("UPDATE pending_overlays SET state='Confirmed',updated_at=? WHERE overlay_id=?", (now, overlay["overlay_id"]))
-                        confirmed_overlay_count += 1
-            revision = self._increment_revision(db)
-            self._audit_in_connection(db, "snapshot-service", "snapshot-activated", "success", {"resource": resource, "scope": normalized_scope, "rows": len(rows), "snapshotId": snapshot_id, "revision": revision, "confirmedUserOverlays": confirmed_overlay_count})
-            db.commit()
-        return {"snapshotId": snapshot_id, "resource": resource, "scope": normalized_scope, "rowCount": len(rows), "sha256": content_hash, "activatedAt": now, "workspaceRevision": revision}
+            if resource == "Devices":
+                user_id = str(row.get("Assigned User ID") or row.get("ownerId") or row.get("userId") or "").strip()
+                db.execute(
+                    "INSERT INTO user_device_relationships VALUES(?,?,?,?,?,?,?,?)",
+                    (
+                        snapshot_id,
+                        index,
+                        str(row.get("Axon Device ID") or row.get("id") or row.get("Serial Number") or index),
+                        user_id,
+                        "Assigned" if user_id else "Unassigned",
+                        str(row.get("Device Status") or row.get("status2") or ""),
+                        str(row.get("Device Model") or row.get("model") or ""),
+                        str(row.get("Device Home Name (API)") or row.get("homeId") or ""),
+                    ),
+                )
+
+    def _confirm_user_overlays(
+        self,
+        db: sqlite3.Connection,
+        resource: str,
+        scope: dict[str, Any],
+        rows: Sequence[dict[str, Any]],
+        activated_at: str,
+    ) -> int:
+        if resource != "Users" or scope.get("type") != "full":
+            return 0
+        snapshot_emails = {
+            str(row.get("Email") or row.get("EMAIL") or row.get("email") or "").strip().casefold()
+            for row in rows
+            if str(row.get("Email") or row.get("EMAIL") or row.get("email") or "").strip()
+        }
+        snapshot_external_ids = {
+            str(row.get("External ID") or row.get("EXTERNAL_ID") or row.get("externalId") or "").strip().casefold()
+            for row in rows
+            if str(row.get("External ID") or row.get("EXTERNAL_ID") or row.get("externalId") or "").strip()
+        }
+        overlays = db.execute(
+            "SELECT overlay_id,payload_json FROM pending_overlays WHERE entity_type='User' AND state='Submitted—awaiting confirmation'"
+        ).fetchall()
+        confirmed_overlay_count = 0
+        for overlay in overlays:
+            payload = json.loads(overlay["payload_json"])
+            email = str(payload.get("email") or "").strip().casefold()
+            external_id = str(payload.get("externalId") or "").strip().casefold()
+            if (email and email in snapshot_emails) or (external_id and external_id in snapshot_external_ids):
+                db.execute(
+                    "UPDATE pending_overlays SET state='Confirmed',updated_at=? WHERE overlay_id=?",
+                    (activated_at, overlay["overlay_id"]),
+                )
+                confirmed_overlay_count += 1
+        return confirmed_overlay_count
 
     def active_snapshot(self, resource: str, prefer_full: bool = True) -> dict[str, Any] | None:
         with self.connection() as db:
@@ -492,6 +605,84 @@ class SharedWorkspace:
             "activatedAt": selected["activated_at"],
             "source": selected["source"],
             "rows": [json.loads(row["payload_json"]) for row in row_data],
+        }
+
+    def read_operational_view(self) -> dict[str, Any]:
+        """Read active snapshots, overlays, metadata, and revision atomically.
+
+        A single SQLite read transaction prevents a multi-resource activation
+        from becoming visible halfway through a dashboard response. The caller
+        therefore receives either the complete pre-activation view or the
+        complete post-activation view, with the matching workspace revision.
+        """
+        with self.connection() as db:
+            db.execute("BEGIN")
+            revision = self._workspace_revision(db)
+            snapshot_records = db.execute(
+                "SELECT snapshot_id,resource,scope_json,row_count,content_hash,activated_at,source "
+                "FROM resource_snapshots WHERE status='active' "
+                "ORDER BY resource,activated_at DESC"
+            ).fetchall()
+            snapshots: list[dict[str, Any]] = []
+            metadata: list[dict[str, Any]] = []
+            selected_records: list[sqlite3.Row] = []
+            records_by_resource: dict[str, list[sqlite3.Row]] = {}
+            for record in snapshot_records:
+                records_by_resource.setdefault(record["resource"], []).append(record)
+            for resource, resource_records in records_by_resource.items():
+                selected = next(
+                    (
+                        record
+                        for record in resource_records
+                        if json.loads(record["scope_json"]).get("type") == "full"
+                    ),
+                    None,
+                )
+                if selected is None and resource == "Devices":
+                    selected = resource_records[0]
+                if selected is not None:
+                    selected_records.append(selected)
+            for record in snapshot_records:
+                scope = json.loads(record["scope_json"])
+                item = {
+                    "snapshotId": record["snapshot_id"],
+                    "resource": record["resource"],
+                    "scope": scope,
+                    "rowCount": record["row_count"],
+                    "sha256": record["content_hash"],
+                    "activatedAt": record["activated_at"],
+                    "source": record["source"],
+                }
+                metadata.append(dict(item))
+                if record not in selected_records:
+                    continue
+                row_data = db.execute(
+                    "SELECT payload_json FROM snapshot_rows WHERE snapshot_id=? ORDER BY row_index",
+                    (record["snapshot_id"],),
+                ).fetchall()
+                snapshots.append({**item, "rows": [json.loads(row["payload_json"]) for row in row_data]})
+            overlay_rows = db.execute(
+                "SELECT * FROM pending_overlays ORDER BY updated_at DESC"
+            ).fetchall()
+            overlays = [
+                {
+                    "overlayId": row["overlay_id"],
+                    "runId": row["run_id"],
+                    "runRevision": row["run_revision"],
+                    "entityType": row["entity_type"],
+                    "entityKey": row["entity_key"],
+                    "state": row["state"],
+                    "payload": json.loads(row["payload_json"]),
+                    "updatedAt": row["updated_at"],
+                }
+                for row in overlay_rows
+            ]
+            db.commit()
+        return {
+            "workspaceRevision": revision,
+            "snapshots": snapshots,
+            "snapshotMetadata": metadata,
+            "pendingOverlays": overlays,
         }
 
     def snapshot_metadata(self) -> list[dict[str, Any]]:
@@ -867,6 +1058,100 @@ class SharedWorkspace:
         if not row:
             raise KeyError("Governance dataset was not found.")
         return {"dataset": row["dataset_key"], "fileName": row["file_name"], "headers": json.loads(row["headers_json"]), "rows": json.loads(row["rows_json"]), "sourceSha256": row["source_sha256"], "sourcePath": row["source_path"], "revision": row["revision"], "migratedAt": row["migrated_at"], "updatedAt": row["updated_at"]}
+
+    def ensure_governance_candidates(
+        self,
+        dataset_key: str,
+        candidates: list[dict[str, Any]],
+        unique_fields: Sequence[str],
+        actor: str = "provisioning-center",
+    ) -> dict[str, Any]:
+        """Append distinct, unapproved observed values to a governance dataset.
+
+        Candidate creation is deliberately separate from review and approval. It
+        never changes an existing row, and the audit event records counts rather
+        than directory-derived values.
+        """
+        if not unique_fields:
+            raise ValueError("At least one governance candidate key field is required.")
+
+        def normalized_key(row: dict[str, Any]) -> tuple[str, ...]:
+            return tuple(
+                re.sub(r"[^a-z0-9]+", " ", str(row.get(field) or "").strip().casefold()).strip()
+                for field in unique_fields
+            )
+
+        with self.connection() as db:
+            db.execute("BEGIN IMMEDIATE")
+            source = db.execute("SELECT * FROM governance_datasets WHERE dataset_key=?", (dataset_key,)).fetchone()
+            if not source:
+                db.rollback()
+                raise KeyError("Governance dataset was not found.")
+            headers = json.loads(source["headers_json"])
+            missing_fields = [field for field in unique_fields if field not in headers]
+            if missing_fields:
+                db.rollback()
+                raise ValueError("Governance candidate key fields are missing: " + ", ".join(missing_fields))
+
+            rows = json.loads(source["rows_json"])
+            known = {normalized_key(row) for row in rows}
+            additions: list[dict[str, str]] = []
+            for raw in candidates:
+                candidate = {header: "" if raw.get(header) is None else str(raw.get(header, "")).strip() for header in headers}
+                key = normalized_key(candidate)
+                if not all(key) or key in known:
+                    continue
+                unsafe_key = any(
+                    candidate[field].lstrip().startswith(("=", "+", "-", "@"))
+                    or "\n" in candidate[field]
+                    or "\r" in candidate[field]
+                    for field in unique_fields
+                )
+                if unsafe_key:
+                    continue
+                additions.append(candidate)
+                known.add(key)
+
+            if not additions:
+                db.rollback()
+                return {"dataset": dataset_key, "added": 0, "revision": source["revision"], "workspaceRevision": self._workspace_revision(db)}
+
+            rows.extend(additions)
+            new_revision = source["revision"] + 1
+            now = utc_now()
+            db.execute(
+                "UPDATE governance_datasets SET rows_json=?,revision=?,updated_at=? WHERE dataset_key=?",
+                (canonical_json(rows), new_revision, now, dataset_key),
+            )
+            first_index = len(rows) - len(additions)
+            for offset, candidate in enumerate(additions):
+                db.execute(
+                    "INSERT INTO governance_history VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
+                    (
+                        uuid.uuid4().hex,
+                        dataset_key,
+                        str(first_index + offset),
+                        source["revision"],
+                        new_revision,
+                        "{}",
+                        canonical_json(candidate),
+                        candidate.get("Mapping Method", "Observed during directory enrichment"),
+                        candidate.get("Confidence", "Not rated"),
+                        candidate.get("Review Notes", "Observed during provisioning enrichment; governance review is required."),
+                        actor,
+                        now,
+                    ),
+                )
+            workspace_revision = self._increment_revision(db)
+            self._audit_in_connection(
+                db,
+                actor,
+                "governance-candidates-observed",
+                "success",
+                {"dataset": dataset_key, "added": len(additions), "datasetRevision": new_revision, "workspaceRevision": workspace_revision},
+            )
+            db.commit()
+        return {"dataset": dataset_key, "added": len(additions), "revision": new_revision, "workspaceRevision": workspace_revision}
 
     def update_governance_row(self, dataset_key: str, row_index: int, changes: dict[str, Any], expected_revision: int, reviewer: str, mapping_method: str, confidence: str, review_notes: str) -> dict[str, Any]:
         if not review_notes.strip():

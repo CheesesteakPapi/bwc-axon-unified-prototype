@@ -25,13 +25,13 @@ The browser connects only to the packaged backend on `127.0.0.1`.
 | `/api/live/sync` | `POST` | Start a background GET-only pull |
 | `/api/live/sync/{jobId}` | `GET` | Read pull status and counts |
 | `/api/live/sync/{jobId}/cancel` | `POST` | Request a local stop between read-only resource requests; does not send a write to Axon |
-| `/api/live/dashboard` | `GET` | Current session dashboard payload |
+| `/api/live/dashboard` | `GET` | Confirmed full baseline or explicitly labeled filtered/partial payload read with its matching workspace revision, snapshot metadata, and pending overlays in one SQLite transaction |
 | `/api/live/export/{resource}` | `GET` | Download a temporary current-session export |
 | `/api/governance/summary` | `GET` | Read local facility, office, Group, and relationship totals |
 | `/api/crosswalks/{key}` | `GET` | Search and page one allowlisted local table |
 | `/api/crosswalks/{key}/rows/{rowNumber}` | `POST` | Update allowlisted fields with expected-value checks |
 | `/api/crosswalks/{key}/rows` | `POST` | Add a row only when the table's `allowCreate` is true |
-| `/api/crosswalks/{key}/export` | `GET` | Download the full current local CSV |
+| `/api/crosswalks/{key}/export` | `GET` | Generate the full governed CSV projection from authoritative SQLite at request time |
 
 Configuration validation is structural and intentionally does not authenticate. Credentials are checked only when Axon processes a live request.
 
@@ -41,6 +41,11 @@ Live-job responses include `status`, `phase`, `resources`, `completedResources`,
 
 | Key | File | Locked fields | Creation |
 |---|---|---|---|
+| `approved-roles` | `approved_axon_role_catalog.csv` | None | Yes |
+| `personnel-aor` | `personnel_location_aor_crosswalk.csv` | None | Yes |
+| `job-categories` | `job_title_category_mapping.csv` | None | Yes |
+| `group-rules` | `component_aor_group_rules.csv` | None | Yes |
+| `directory-attributes` | `directory_attribute_mapping.csv` | Canonical Field | No |
 | `device-homes` | `device_home_crosswalk_starter.csv` | Office/site and geography fields | No |
 | `axon-groups` | `axon_group_crosswalk_starter.csv` | Office/site and geography fields | No |
 | `non-site-groups` | `axon_non_site_group_register_starter.csv` | None | Yes |
@@ -49,9 +54,11 @@ Live-job responses include `status`, `phase`, `resources`, `completedResources`,
 | `group-master` | `axon_group_master_starter.csv` | None | Yes |
 | `site-group-relationships` | `site_group_relationship_starter.csv` | None | Yes |
 
-`GET /api/crosswalks/{key}` accepts `page`, `pageSize`, and case-insensitive `search`. The UI uses 25 rows per page; the API caps a page at 200. The response includes `allowCreate`, `storage: local-file`, and `axonWrite: false`.
+`GET /api/crosswalks/{key}` accepts `page`, `pageSize`, and case-insensitive `search`. The UI uses 25 rows per page; the API caps a page at 200. The response includes `allowCreate`, `storage: shared-sqlite`, and `axonWrite: false`.
 
-The export route returns the complete current file, not the visible page or search result. `device_status_map.csv` remains a governed file without an in-app route until exact raw tenant `status2` values are observed and reviewed.
+Only a Device Home or Axon Group crosswalk row with a nonblank Site ID and an explicit `Mapping Status` of `Mapped` participates in confirmed geographic metrics. Candidate, needs-review, and other unapproved rows remain visible for review but do not count as mapped.
+
+The export route generates the complete current CSV projection from authoritative SQLite, not from the visible page, search result, or an older disk projection. `device_status_map.csv` remains a governed file without an in-app route until exact raw tenant `status2` values are observed and reviewed; runtime syncs read its current file and match statuses case-insensitively.
 
 ## Local write safeguards
 
@@ -59,14 +66,17 @@ The export route returns the complete current file, not the visible page or sear
 - Updates include `changes` and the full `expected` row. Any mismatch returns `409 Conflict` before writing.
 - Submitted editable values are trimmed. A value beginning with `=`, `+`, `-`, or `@` is rejected before backup creation or file replacement.
 - Exact IDs and table-specific uniqueness are validated.
-- Before each successful update or creation, the prior CSV is copied to `..\governance_data\backups\crosswalks\` with a UTC timestamp. The shared working file is then atomically replaced with the governed header and encoding preserved.
+- Each successful update or creation commits a revision-aware SQLite transaction first, using the dataset revision captured during the same read. The application then attempts a timestamped backup and CSV projection refresh with the header and encoding preserved. If that secondary operation fails, the authoritative SQLite commit remains and the response reports a projection warning.
 
-### V3.0.0 storage roots
+Geographic multi-resource pulls stage every requested snapshot and activate the complete batch in one SQLite transaction and one workspace revision. Cancellation or failure before commit activates none of the pending batch. Filtered Devices snapshots never replace confirmed full-device metrics; a first filtered-only result is labeled as filtered rather than as a complete baseline.
 
-- `BWC_GOVERNANCE_ROOT` identifies the single authoritative working directory.
+### V3.1.0 storage roots
+
+- The per-user shared SQLite workspace is authoritative after initial migration.
+- `BWC_GOVERNANCE_ROOT` identifies the governed CSV projection and backup workspace.
 - `BWC_GOVERNANCE_STARTER_ROOT` identifies the pristine starter directory.
 - Missing working files are copied from starters at startup; existing files are never overwritten by initialization.
-- The packaged macOS and Windows executables resolve both values under the signed-in user's application-data root.
+- The macOS and Windows source launchers resolve both values under the signed-in user's application-data root.
 - There is no delete route.
 - Local writes never call Axon.
 
@@ -145,7 +155,7 @@ Device Search is paced at one request every five seconds. `429` follows `Retry-A
 
 ## Export contract
 
-- Persistent local-table CSV export returns the full current governed file.
+- Persistent local-table CSV export returns the full current governed projection.
 - Live-session CSV exports contain the complete current temporary resource/report rows.
 - Illustrative current-view CSVs are created in the browser from the labeled current view.
 - PDF uses a dedicated scoped report preview. macOS operators choose PDF > Save as PDF; Windows operators choose Microsoft Print to PDF.
@@ -153,7 +163,7 @@ Device Search is paced at one request every five seconds. `429` follows `Retry-A
 
 ## Credential and data lifetime
 
-Client ID, Client Secret, and token remain only in the running Python process. The application does not persist them to `config.json`, browser storage, logs, or exports. Only tenant URL and timeout may be saved. Live rows and generated server-side session exports use a temporary directory removed at normal shutdown. Local governed files, their backups, and explicitly downloaded files persist.
+Client ID, Client Secret, and token remain only in the running Python process. The application does not persist them to `config.json`, browser storage, logs, or exports. Only tenant URL and timeout may be saved. Live rows and generated server-side session exports use a temporary directory removed at normal shutdown. The shared SQLite workspace, governed CSV projections, their backups, and explicitly downloaded files persist.
 
 ## Explicitly excluded operations
 

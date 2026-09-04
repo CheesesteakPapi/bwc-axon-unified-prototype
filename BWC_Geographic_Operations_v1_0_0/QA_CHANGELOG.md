@@ -1,4 +1,13 @@
-# QA and Change Log — v0.3.0
+# QA and Change Log
+
+## Unified Prototype V3.1.0 shared-workspace addendum
+
+- SQLite is authoritative for the twelve in-app governance tables; live sync and export projections are generated from current SQLite values. The device-status map remains file-governed and is matched case-insensitively.
+- Cross-process saves use the dataset revision captured during the same read. A stale race returns a conflict, while a secondary CSV projection failure leaves the SQLite commit intact and returns a warning.
+- A multi-resource pull activates all requested snapshots in one SQLite transaction and one workspace revision. Cancellation or failure before commit activates none of the pending batch.
+- The dashboard reads selected snapshot rows, all active-scope metadata, pending overlays, and the matching workspace revision in one bounded transaction, preventing mixed pre/post-refresh responses without loading every historical filtered result.
+- Full-device totals remain the confirmed baseline after filtered pulls. A first filtered-only pull is explicitly labeled as a non-confirmed filtered result, and partial snapshots never display or export unknown assignment counts as zero. Pending user totals also remain unavailable until a confirmed Users snapshot exists.
+- Current verification: 33 backend tests passed; production Vite build passed; standalone UI test passed; npm audit reported zero vulnerabilities.
 
 ## V2.3.6 macOS implementation
 

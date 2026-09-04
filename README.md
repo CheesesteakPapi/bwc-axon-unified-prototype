@@ -41,7 +41,9 @@ Add Users → Enrich → Review Exceptions → Preview → Submit → Track
 - Entra lookup uses read-only delegated `User.Read.All`. Intake Email is resolved against an exact Entra `mail` value; the returned UPN is preserved separately and used as External ID. Entra membership is not requested and is never correlated to Axon Groups.
 - The confirmed directory projection is `mail` → Email, `userPrincipalName` → UPN and External ID, `mailNickname` → UserName and Badge Number, `givenName`/`surname` → names, `department` → Component, `officeLocation` → Directory Location, and `jobTitle` → Job Title.
 - Status defaults to `Active`. Directory status remains separate; a disabled account is a blocker until reviewed.
-- Group recommendations use `Component + Personnel AOR + exact-title Job Category` and resolve only to reviewed current Axon Groups.
+- Personnel Location/AOR and Job Title/Category enrichment gaps are warnings, not user-import blockers. Newly observed directory values are added once to the governed crosswalks as `Needs review` candidates with their provider provenance.
+- Group recommendations use `Component + Personnel AOR + exact-title Job Category` when those optional values are available. Active/non-inactive Group rules may populate the recommendation without a separate reviewed status.
+- The Group picker is populated from the current Groups snapshot (or local Group master). An operator may select an exact Group or leave the assignment blank; blank Group assignments generate no Group relationship row and do not block the user import.
 - Preview identity fields are read-only. Assignment fields support governed row and bulk edits with reasons.
 - Existing-account changes require a dedicated review and approval step. Approval does not submit anything.
 - User chunks complete before Group relationship chunks become eligible. No Axon write is retried automatically when its result is ambiguous.
@@ -57,6 +59,8 @@ The default database is:
 It persists normalized Users, Groups, Devices, Device Homes, facilities, office presences, governed mappings, provisioning revisions, pending overlays, refresh metadata, and a hash-chained audit log. Raw API responses and credentials are not retained by default.
 
 Confirmed snapshots and pending proposals are separate. Geographic Operations excludes pending users from confirmed metrics and shows `Baseline + Pending` only as a separate projected measure. Filtered Devices snapshots never replace the complete Devices baseline.
+
+Geographic mapping totals include only crosswalk relationships with a nonblank Site ID and an explicit governed `Mapped` status. Candidate and needs-review rows remain visible without being counted as confirmed mappings.
 
 Governed CSVs are imported once with their original paths and SHA-256 values recorded. SQLite becomes the editable source; CSV files are projections for export and workbook review, not a second editable truth.
 

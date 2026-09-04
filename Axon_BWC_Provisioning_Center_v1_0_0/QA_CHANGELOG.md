@@ -1,4 +1,12 @@
-# QA Changelog — v0.4.2
+# QA Changelog
+
+## Unified Prototype V3.1.0 shared-workspace addendum
+
+- The run-based workflow now carries intake through enrichment, governed review, editable Preview, explicit update approval, submission, and tracking without intermediate download/re-upload steps.
+- Email and UPN remain distinct; exact Entra `mail` lookup enriches UPN/External ID, alias/Badge Number, names, Component, Location, Job Title, and supervisor fields while proposed status remains Active.
+- Optional Location/AOR and Job Title/category gaps are warnings and populate governed review candidates. Role remains required, and Group selection is optional but resolves only to an exact current Group ID.
+- Application-initiated syncs materialize current SQLite governance into temporary projections. The file-governed device-status map remains a direct runtime input.
+- Current verification: 31 backend tests passed; production Vite build passed; standalone UI test passed; npm audit reported zero vulnerabilities.
 
 ## v0.4.2 cross-platform integration
 

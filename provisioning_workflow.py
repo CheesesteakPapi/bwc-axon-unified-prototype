@@ -39,6 +39,7 @@ GROUP_HEADERS = ["EXTERNAL_ID", "MEMBERSHIP_TYPE", "ENTITY_TYPE", "ENTITY_ID"]
 ASSIGNMENT_EDIT_FIELDS = {
     "role",
     "groupName",
+    "groupExternalId",
     "location",
     "personnelAor",
     "jobCategory",
@@ -382,7 +383,23 @@ def _group_candidates(workspace: SharedWorkspace) -> list[dict[str, Any]]:
         external_id = _lookup_value(row, "External Group ID", "externalId", "EXTERNAL_ID", "id", "Axon Group ID")
         if name and external_id:
             candidates.append({"name": name, "externalId": external_id, "component": _lookup_value(row, "Component"), "aor": _lookup_value(row, "Organizational Area", "AOR", "Region / AOR"), "tier": _lookup_value(row, "Group Tier"), "parent": _lookup_value(row, "Parent Group ID"), "status": _lookup_value(row, "Mapping Status", "status")})
-    return candidates
+    unique: dict[tuple[str, str], dict[str, Any]] = {}
+    for candidate in candidates:
+        unique[(candidate["externalId"].casefold(), candidate["name"].casefold())] = candidate
+    return sorted(
+        unique.values(),
+        key=lambda item: (
+            item["name"].casefold(),
+            item["component"].casefold(),
+            item["aor"].casefold(),
+            item["externalId"].casefold(),
+        ),
+    )
+
+
+def group_options(workspace: SharedWorkspace) -> list[dict[str, Any]]:
+    """Return current friendly Group choices for the local provisioning UI."""
+    return _group_candidates(workspace)
 
 
 def _directory_value(row: dict[str, Any], canonical: str, *aliases: str) -> str:
@@ -433,6 +450,8 @@ def _classify_title(workspace: SharedWorkspace, title: str) -> str:
 
 
 def _group_rule(workspace: SharedWorkspace, component: str, aor: str, category: str) -> tuple[str, str]:
+    if not component or not aor or not category:
+        return "", "MEMBER" if category in {"", "Standard User"} else "MONITOR"
     for rule in _dataset_rows(workspace, "component_aor_group_rules"):
         if normalize_header(_lookup_value(rule, "Component")) != normalize_header(component):
             continue
@@ -440,11 +459,11 @@ def _group_rule(workspace: SharedWorkspace, component: str, aor: str, category: 
             continue
         if normalize_header(_lookup_value(rule, "Job Category")) != normalize_header(category):
             continue
-        if _lookup_value(rule, "Review Status", "Status").casefold() not in {"reviewed", "approved", "active"}:
+        if _lookup_value(rule, "Review Status", "Status").casefold() == "inactive":
             continue
         membership = _lookup_value(rule, "Membership Type") or ("MEMBER" if category == "Standard User" else "MONITOR")
         return _lookup_value(rule, "Group Name"), membership.upper()
-    return "", "MEMBER" if category == "Standard User" else "MONITOR"
+    return "", "MEMBER" if category in {"", "Standard User"} else "MONITOR"
 
 
 def _approved_roles(workspace: SharedWorkspace) -> set[str]:
@@ -460,19 +479,104 @@ def _approved_roles(workspace: SharedWorkspace) -> set[str]:
 def resolve_group(workspace: SharedWorkspace, name: str, component: str, aor: str) -> tuple[dict[str, Any] | None, str]:
     matches = [item for item in _group_candidates(workspace) if item["name"].casefold() == name.casefold()]
     if not matches:
-        return None, f'Group "{name}" does not resolve to a current reviewed Axon Group.'
+        return None, f'Group "{name}" does not resolve to the current Axon Groups snapshot or local Group master.'
     if len(matches) > 1:
         narrowed = [item for item in matches if (not item["component"] or normalize_header(item["component"]) == normalize_header(component)) and (not item["aor"] or normalize_header(item["aor"]) == normalize_header(aor))]
         if len(narrowed) == 1:
             return narrowed[0], ""
         descriptions = "; ".join(f"{item['name']} [{item['component'] or '—'} / {item['aor'] or '—'} / {item['tier'] or '—'} / {item['externalId']}]" for item in matches[:5])
-        return None, f"Group name is ambiguous. Select one reviewed Group: {descriptions}"
+        return None, f"Group name is ambiguous. Select one exact Group: {descriptions}"
     return matches[0], ""
+
+
+def _ensure_observed_crosswalk_candidates(
+    workspace: SharedWorkspace,
+    directory: dict[str, dict[str, Any]],
+    provider_name: str,
+) -> dict[str, int]:
+    """Queue new directory-derived mapping values for review without identities."""
+    mapping_method = {
+        "entra-delegated": "Observed from Entra",
+        "sharepoint-export": "Observed from SharePoint export",
+        "directory-file": "Observed from directory export",
+        "synthetic-test": "Synthetic observation",
+    }.get(provider_name, "Observed during directory enrichment")
+    location_counts: Counter[tuple[str, str]] = Counter()
+    location_display: dict[tuple[str, str], tuple[str, str]] = {}
+    title_counts: Counter[str] = Counter()
+    title_display: dict[str, str] = {}
+
+    for source in directory.values():
+        location = _governed_directory_value(
+            workspace, source, "Directory Location", "directoryLocation", "officeLocation", "location"
+        )
+        component = _governed_directory_value(
+            workspace, source, "Component", "component", "department", "companyName"
+        )
+        location_key = (normalize_header(location), normalize_header(component))
+        if all(location_key):
+            location_counts[location_key] += 1
+            location_display.setdefault(location_key, (location, component))
+
+        title = _governed_directory_value(workspace, source, "Job Title", "jobTitle", "title")
+        title_key = normalize_header(title)
+        if title_key:
+            title_counts[title_key] += 1
+            title_display.setdefault(title_key, title)
+
+    location_candidates = []
+    for key, count in location_counts.items():
+        location, component = location_display[key]
+        location_candidates.append(
+            {
+                "Directory Location": location,
+                "Effective Location": location,
+                "Component": component,
+                "Personnel AOR": "",
+                "Review Status": "Needs review",
+                "Mapping Method": mapping_method,
+                "Confidence": "Not rated",
+                "Reviewer": "",
+                "Reviewed At UTC": "",
+                "Review Notes": f"Observed during provisioning enrichment for {count} intake row(s); optional AOR mapping requires review.",
+            }
+        )
+
+    title_candidates = []
+    for key, count in title_counts.items():
+        title_candidates.append(
+            {
+                "Exact Job Title": title_display[key],
+                "Job Category": "",
+                "Review Status": "Needs review",
+                "Mapping Method": mapping_method,
+                "Confidence": "Not rated",
+                "Reviewer": "",
+                "Reviewed At UTC": "",
+                "Review Notes": f"Observed during provisioning enrichment for {count} intake row(s); optional category mapping requires review.",
+            }
+        )
+
+    location_result = workspace.ensure_governance_candidates(
+        "personnel_location_aor_crosswalk",
+        location_candidates,
+        ("Directory Location", "Component"),
+    )
+    title_result = workspace.ensure_governance_candidates(
+        "job_title_category_mapping",
+        title_candidates,
+        ("Exact Job Title",),
+    )
+    return {
+        "locationAor": int(location_result.get("added", 0)),
+        "jobCategory": int(title_result.get("added", 0)),
+    }
 
 
 def enrich_rows(workspace: SharedWorkspace, intake_rows: list[dict[str, str]], provider: DirectoryProvider) -> tuple[list[dict[str, Any]], dict[str, Any], dict[str, Any]]:
     emails = [normalize_email(row.get("email")) for row in intake_rows]
     directory = provider.resolve(sorted(set(email for email in emails if email)))
+    candidates_added = _ensure_observed_crosswalk_candidates(workspace, directory, provider.name)
     existing_users = _current_users(workspace)
     approved_roles = _approved_roles(workspace)
     duplicates = {email for email, count in Counter(emails).items() if email and count > 1}
@@ -502,20 +606,21 @@ def enrich_rows(workspace: SharedWorkspace, intake_rows: list[dict[str, str]], p
         directory_location = _governed_directory_value(workspace, source, "Directory Location", "directoryLocation", "officeLocation", "location")
         component = _governed_directory_value(workspace, source, "Component", "component", "department", "companyName")
         location, personnel_aor = _map_location(workspace, directory_location, component)
-        if not personnel_aor:
-            blockers.append("Personnel Location does not have one reviewed Location-to-AOR mapping.")
+        if directory_location and not personnel_aor:
+            warnings.append("Personnel Location has no reviewed Location-to-AOR mapping. A review candidate is available in the crosswalk; user import is not blocked.")
         job_title = _governed_directory_value(workspace, source, "Job Title", "jobTitle", "title")
         category = _classify_title(workspace, job_title)
-        if not category:
-            blockers.append("Exact job title does not have a reviewed job-category mapping.")
+        if job_title and not category:
+            warnings.append("Job Title has no reviewed job-category mapping. A review candidate is available in the crosswalk; user import is not blocked.")
         recommended_group, membership = _group_rule(workspace, component, personnel_aor, category)
         requested_group = str(intake.get("groupName") or "").strip()
-        group_name = requested_group or recommended_group
-        if not group_name:
-            blockers.append("No reviewed Component/AOR/job-category Group rule was found.")
+        group_name = requested_group
         group, group_error = resolve_group(workspace, group_name, component, personnel_aor) if group_name else (None, "")
         if group_error:
-            blockers.append(group_error)
+            warnings.append(group_error + " No Group-assignment record will be generated; user import is not blocked.")
+        elif not group_name:
+            recommendation_note = f' The governed recommendation is "{recommended_group}".' if recommended_group else ""
+            warnings.append("No Axon Group was selected." + recommendation_note + " No Group-assignment record will be generated; user import is not blocked.")
         existing = existing_users.get(email)
         upn = _governed_directory_value(workspace, source, "UPN", "upn", "userPrincipalName")
         external_id = _governed_directory_value(workspace, source, "External ID", "externalId", "userPrincipalName", "upn")
@@ -572,6 +677,7 @@ def enrich_rows(workspace: SharedWorkspace, intake_rows: list[dict[str, str]], p
         row["differences"] = field_differences(row, existing or {})
         output.append(row)
     validation = validate_run(output)
+    validation["crosswalkCandidatesAdded"] = candidates_added
     generation = generate_records(output)
     return output, validation, generation
 
@@ -667,29 +773,69 @@ def generate_records(rows: list[dict[str, Any]]) -> dict[str, Any]:
     }
 
 
-def _recalculate_assignment(workspace: SharedWorkspace, row: dict[str, Any]) -> dict[str, Any]:
+def _recalculate_assignment(
+    workspace: SharedWorkspace,
+    row: dict[str, Any],
+    changed_fields: set[str] | None = None,
+) -> dict[str, Any]:
     updated = dict(row)
-    blockers = [value for value in updated.get("blockers", []) if not any(fragment in value for fragment in ("Personnel Location", "job title", "Group", "Role"))]
+    changed_fields = changed_fields or set()
+    stale_assignment_markers = (
+        "role",
+        "personnel location",
+        "personnel aor",
+        "location-to-aor",
+        "job title",
+        "job category",
+        "job-category",
+        "group",
+    )
+    blockers = [
+        value
+        for value in updated.get("blockers", [])
+        if not any(marker in value.casefold() for marker in stale_assignment_markers)
+    ]
+    warnings = [
+        value
+        for value in updated.get("warnings", [])
+        if not any(fragment in value for fragment in ("Location-to-AOR", "job-category", "Axon Group", "Group-assignment", "Group name"))
+    ]
     approved_roles = _approved_roles(workspace)
-    if updated.get("role", "").casefold() not in approved_roles:
+    if not updated.get("role", "").strip():
+        blockers.append("Role is required.")
+    elif not approved_roles:
+        blockers.append("The approved Axon Role catalog is empty; an administrator must review at least one role.")
+    elif updated.get("role", "").casefold() not in approved_roles:
         blockers.append(f'Role "{updated.get("role", "")}" is not in the approved Axon Role catalog.')
-    if not updated.get("personnelAor"):
-        blockers.append("Personnel AOR is required.")
-    if not updated.get("jobCategory"):
-        blockers.append("Job category is required.")
+    if updated.get("directoryLocation") and not updated.get("personnelAor"):
+        warnings.append("Personnel Location has no reviewed Location-to-AOR mapping. User import is not blocked.")
+    if updated.get("jobTitle") and not updated.get("jobCategory"):
+        warnings.append("Job Title has no reviewed job-category mapping. User import is not blocked.")
     recommended, membership = _group_rule(workspace, updated.get("component", ""), updated.get("personnelAor", ""), updated.get("jobCategory", ""))
     updated["recommendedGroupName"] = recommended
-    if not updated.get("groupName") or updated.get("groupName") == row.get("recommendedGroupName"):
-        updated["groupName"] = recommended
-    group, error = resolve_group(workspace, updated.get("groupName", ""), updated.get("component", ""), updated.get("personnelAor", "")) if updated.get("groupName") else (None, "No reviewed Group rule or override was provided.")
-    if error:
-        blockers.append(error)
-        updated["groupExternalId"] = ""
+    if "groupExternalId" in changed_fields:
+        external_id = updated.get("groupExternalId", "")
+        exact = [item for item in _group_candidates(workspace) if item["externalId"] == external_id] if external_id else []
+        group, error = ((exact[0], "") if len(exact) == 1 else (None, "The selected Axon Group is no longer available in the current Group pool.")) if external_id else (None, "")
+    elif "groupName" in changed_fields:
+        group, error = resolve_group(workspace, updated.get("groupName", ""), updated.get("component", ""), updated.get("personnelAor", "")) if updated.get("groupName") else (None, "")
+    elif updated.get("groupExternalId"):
+        exact = [item for item in _group_candidates(workspace) if item["externalId"] == updated["groupExternalId"]]
+        group, error = (exact[0], "") if len(exact) == 1 else (None, "The selected Axon Group is no longer available in the current Group pool.")
     else:
+        group, error = resolve_group(workspace, updated.get("groupName", ""), updated.get("component", ""), updated.get("personnelAor", "")) if updated.get("groupName") else (None, "")
+    if error:
+        warnings.append(error + " No Group-assignment record will be generated; user import is not blocked.")
+        updated["groupExternalId"] = ""
+    elif group:
         updated["groupExternalId"] = group["externalId"]
         updated["groupName"] = group["name"]
+    else:
+        updated["groupExternalId"] = ""
+        warnings.append("No Axon Group was selected. No Group-assignment record will be generated; user import is not blocked.")
     updated["membershipType"] = membership
     updated["blockers"] = list(dict.fromkeys(blockers))
+    updated["warnings"] = list(dict.fromkeys(warnings))
     updated["validationState"] = "Blocked" if blockers else "Ready"
     updated["differences"] = field_differences(updated, updated.get("currentAxon") or {})
     return updated
@@ -709,7 +855,7 @@ def edit_rows(workspace: SharedWorkspace, rows: list[dict[str, Any]], edits: lis
             raise WorkflowError("Identity fields are read-only in Preview: " + ", ".join(sorted(forbidden)))
         by_id[row_id].update({key: str(value or "").strip() for key, value in changes.items()})
         by_id[row_id]["lastChangeReason"] = reason.strip()
-        by_id[row_id] = _recalculate_assignment(workspace, by_id[row_id])
+        by_id[row_id] = _recalculate_assignment(workspace, by_id[row_id], set(changes))
     updated = [by_id[row["rowId"]] for row in rows]
     return updated, validate_run(updated), generate_records(updated)
 

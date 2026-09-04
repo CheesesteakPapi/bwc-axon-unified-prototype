@@ -4,14 +4,14 @@
 
 | Area | Result | Evidence |
 |---|---|---|
-| Shared workspace/workflow unit tests | PASS | 9 tests: enrichment, exact-mail Entra resolution, distinct Email/UPN mapping, strict fields, chunk boundaries, filtered/full snapshots, refresh conflict, revision conflict, XLSX formula non-execution, overlay confirmation, guarded purge, and audit-chain checks across combined cases |
-| Provisioning backend regression | PASS | 30 tests |
-| Geographic backend regression | PASS | 23 tests |
+| Shared workspace/workflow unit tests | PASS | 17 tests, including optional mapping warnings, deduplicated crosswalk candidate creation, non-reviewed active Group rules, exact Group selection, atomic snapshot batches, bounded atomic dashboard reads, and shared mapping-status enforcement across all three sync components, plus prior enrichment, Entra, chunking, revision, XLSX, overlay, purge, and audit checks |
+| Provisioning backend regression | PASS | 31 tests |
+| Geographic backend regression | PASS | 33 tests, including unavailable partial-scope projections and device-count handling |
 | Provisioning UI production build | PASS | Vite build completed |
 | Geographic UI production build | PASS | Vite build completed |
 | Python compilation | PASS | Shared modules, three backends/utilities, and test modules compiled |
 | Tokenized loopback/API smoke | PASS | Both services started with auto-port, exchanged launch token for session cookie, and returned health/workspace payloads |
-| Source ZIP integrity | PASS | SHA-256 manifest, ZIP reopen, forbidden-path scan, and internal path-length validation |
+| Source ZIP integrity | NOT RERUN | The preserved prior package passed SHA-256, reopen, forbidden-path, and path-length checks; this source commit was not regenerated as a ZIP |
 
 Distribution-package counts and archive hashes remain with the preserved local package. This source repository uses `scripts/check_publish_safety.py` and GitHub Actions to enforce its separate synthetic-only publication boundary.
 
@@ -26,7 +26,7 @@ Distribution-package counts and archive hashes remain with the preserved local p
 - Corrected clean-runner test working directories and pinned the current GitHub-maintained checkout/runtime setup actions to verified commit SHAs.
 - Corrected Windows automatic-port fallback to request a safe OS-selected loopback port instead of incrementing into a potentially excluded Windows port range.
 - Updated Vite from 6.4.2 to 6.4.3 and refreshed affected transitive dependencies; `npm audit --audit-level=high` reports zero known vulnerabilities for both client trees and now runs in CI.
-- Revalidated 8 shared tests, 30 Provisioning tests, 23 Geographic tests, both React builds, and both standalone UI build checks.
+- Revalidated 15 shared tests, 31 Provisioning tests, 32 Geographic tests, both React builds, both standalone UI build checks, and zero high-severity npm audit findings.
 
 ## Correctness checks represented in tests/code
 
@@ -37,8 +37,8 @@ Distribution-package counts and archive hashes remain with the preserved local p
 - Friendly Group name resolution and duplicate disambiguation requirements.
 - Assignment-only Preview changes, revision changes, regenerated outputs, and approval invalidation.
 - User/Group chunk maxima at 500, including 500/501/1,000/1,500 boundaries.
-- Shared baseline persistence, resource lease conflict, and filtered Devices isolation.
-- Governed editing, revision checks, review evidence, CSV BOM projection compatibility, source hashes, and formula-prefix rejection.
+- Shared baseline persistence, resource lease conflict, atomic multi-resource activation, canceled-batch rollback, and filtered Devices isolation.
+- Governed editing, read-captured compare-and-swap revisions, review evidence, CSV BOM projection compatibility, source hashes, and formula-prefix rejection.
 - Tokenized local session, loopback-only binding, credential redaction/clearing, and automatic port selection.
 
 ## Entra delegated-read mapping correction
@@ -52,6 +52,28 @@ Distribution-package counts and archive hashes remain with the preserved local p
 - Added explicit blockers when UPN, External ID, Badge Number, names, or UserName are missing.
 - Added a mocked delegated-read regression test proving the lookup URL, requested properties, manager-object-ID call, mapped roster row, generated Axon record, and business-phone fallback without transmitting credentials.
 
+## Optional mapping and Group-selection correction
+
+- Personnel Location without one reviewed AOR mapping is now a warning, not a blocker; `LOCATION` remains usable and Personnel AOR may stay blank.
+- Job Title is optional for user import. A returned but unmapped Job Title is now a warning, not a blocker.
+- Distinct Location/Component and Job Title values observed through enrichment are appended once to their governed crosswalks with `Needs review`, provider-specific provenance, and no user identity in the audit event.
+- Component/AOR/job-category Group rules no longer require a reviewed status; only explicitly inactive rules are excluded.
+- The UI now retrieves the current Group pool and provides friendly drop-downs with Component, AOR, and tier context.
+- An operator may clear Group assignment. The user record remains eligible and the Group relationship row is omitted.
+- Optional mapping and Group warnings are visible separately from blockers, and Preview remains available when no true blocker exists.
+
+## Geographic mapping-metric correction
+
+- A populated Site ID is no longer sufficient to count a Device Home, device, or Axon Group as geographically mapped. The governed crosswalk row must also be explicitly `Mapped`.
+- Candidate and needs-review rows remain in review queues without contributing to confirmed mapping-completion totals.
+- Reviewed Region/AOR values remain visible as their governed labels instead of being collapsed into a generic `Needs review` bucket.
+- All three sync components enforce the same mapping-status rule before normalized Site, Component, or AOR values enter a shared snapshot.
+- Geographic governance responses and interface copy now identify SQLite as authoritative. SQLite commits first; CSV backup/projection failure is reported as a warning without falsely rolling back the committed change.
+- Runtime syncs and crosswalk exports materialize current SQLite governance instead of reading a potentially stale CSV projection. The separately file-governed device-status map remains live and status matching is case-insensitive.
+- Geographic multi-resource refreshes activate in one SQLite transaction and one workspace revision only after every resource completes. Cancellation or failure activates none of the pending snapshots.
+- Full-device metrics remain confirmed baseline values. A first filtered-only pull is clearly labeled as a filtered result rather than a complete baseline or a false zero-device snapshot.
+- Users-only or other partial views mark device metrics and assignment counts unavailable and suppress device-derived exports until a full or explicitly filtered Devices scope exists.
+
 ## Changes from V3.0.1
 
 The full list is in `MASTER_RELEASE_NOTES.md`. The central change is architectural: files are no longer the workflow state. A canonical provisioning run and shared database now drive enrichment, Preview, generated Axon records, approval, job state, Geographic overlays, and optional export.
@@ -60,7 +82,7 @@ The full list is in `MASTER_RELEASE_NOTES.md`. The central change is architectur
 
 - Windows 11 standard-user execution must be recorded on the receiving workstation.
 - Live Entra and Axon calls were not performed without approved credentials and change authority.
-- Axon source owners must review production Role, Group, Location/AOR, title, facility, and device governance rows before writes.
+- Axon source owners must review production Roles before user writes. Optional Location/AOR, title/category, and Group-rule candidates may remain pending without blocking eligible user rows, but must be reviewed before they are relied on for automatic organizational assignment or confirmed geographic metrics.
 - Native executable/signing acceptance remains intentionally deferred.
 
 ## Change control

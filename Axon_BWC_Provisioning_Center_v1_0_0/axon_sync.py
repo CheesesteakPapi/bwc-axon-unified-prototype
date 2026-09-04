@@ -287,6 +287,14 @@ def normalize_device_home_key(value: object) -> str:
     return " ".join(str(value or "").casefold().split())
 
 
+def reviewed_site_mapping(mapping: dict[str, str] | None) -> dict[str, str]:
+    """Return a site mapping only after the governed row is explicitly mapped."""
+    candidate = mapping or {}
+    site_id = str(candidate.get("Site ID") or "").strip()
+    status = str(candidate.get("Mapping Status") or "").strip().casefold()
+    return candidate if site_id and status == "mapped" else {}
+
+
 def user_display_name(user: dict | None) -> str:
     if not user:
         return ""
@@ -318,6 +326,7 @@ def map_rows(
         "Raw Axon Device Status",
         ["Reporting State"],
     )
+    status_map = {str(key).strip().casefold(): value for key, value in status_map.items()}
 
     groups_by_id = rows_index(context_rows.get("Groups", []), "Axon Group ID")
     homes_by_key = rows_index(context_rows.get("DeviceHomes", []), "Normalized Device Home Key")
@@ -332,11 +341,12 @@ def map_rows(
             home_key = normalize_device_home_key(home_name)
             row["Normalized Device Home Key"] = home_key
             x = home_crosswalk.get(home_key, {})
+            site_mapping = reviewed_site_mapping(x)
             poc_id = str(row.get("Point of Contact User ID") or "").strip()
             row["Point of Contact Name"] = user_display_name(users_by_id.get(poc_id))
-            row["Mapped Site ID"] = x.get("Site ID", "")
-            row["Mapped Component"] = x.get("Component", "")
-            row["Mapped Region / AOR"] = x.get("Region / AOR", "")
+            row["Mapped Site ID"] = site_mapping.get("Site ID", "")
+            row["Mapped Component"] = site_mapping.get("Component", "")
+            row["Mapped Region / AOR"] = site_mapping.get("Region / AOR", "")
             row["Mapping Status"] = x.get("Mapping Status", "Unmapped")
             row["Last Sync At"] = now
             row["Sync Status"] = "Synced"
@@ -344,9 +354,10 @@ def map_rows(
         elif resource_name == "Groups":
             group_id = str(row.get("Axon Group ID") or "").strip()
             x = group_crosswalk.get(group_id, {})
-            row["Mapped Site ID"] = x.get("Site ID", "")
-            row["Mapped Component"] = x.get("Component", "")
-            row["Mapped Region / AOR"] = x.get("Region / AOR", "")
+            site_mapping = reviewed_site_mapping(x)
+            row["Mapped Site ID"] = site_mapping.get("Site ID", "")
+            row["Mapped Component"] = site_mapping.get("Component", "")
+            row["Mapped Region / AOR"] = site_mapping.get("Region / AOR", "")
             row["Mapping Status"] = x.get("Mapping Status", "Unmapped")
             row["Last Sync At"] = now
             row["Sync Status"] = "Synced"
@@ -373,10 +384,11 @@ def map_rows(
                 row["Assigned User Name"] = user_display_name(owner)
             poc_id = str(home.get("Point of Contact User ID") or "").strip()
             row["Point of Contact"] = user_display_name(users_by_id.get(poc_id))
-            row["Mapped Site ID"] = x.get("Site ID", "")
+            site_mapping = reviewed_site_mapping(x)
+            row["Mapped Site ID"] = site_mapping.get("Site ID", "")
             row["Last Sync At"] = now
             row["Sync Status"] = "Synced"
-            row["Reporting Device State"] = status_map.get(raw_status, {}).get("Reporting State", "Unmapped")
+            row["Reporting Device State"] = status_map.get(raw_status.casefold(), {}).get("Reporting State", "Unmapped")
 
         rows.append(row)
 

@@ -58,11 +58,17 @@ class FakeAxonClient:
                 {"id": "u-3", "attributes": {"externalId": "REV-1", "firstName": "Sam", "lastName": "Patel", "status": "ACTIVE", "role": "Evidence Reviewer"}},
             ]}
         if url.endswith("/devices"):
-            return {"data": [
+            devices = [
                 {"id": "d-1", "attributes": {"serial": "DEMO-SN-1", "model": "Body 4", "status2": "ASSIGNED"}, "relationships": {"owner": {"data": {"id": "u-1"}}, "deviceHome": {"data": {"attributes": {"name": "Example Home Alpha"}}}}},
                 {"id": "d-2", "attributes": {"serial": "DEMO-SN-2", "model": "Body 4", "status2": "IN_STOCK", "deviceHome": "Example Home Alpha"}, "relationships": {"owner": {"data": {}}, "deviceHome": {"data": {"attributes": {"name": "Example Home Alpha"}}}}},
                 {"id": "d-3", "attributes": {"serial": "SN-3", "model": "Fleet 3", "status2": "LOST"}, "relationships": {"owner": {"data": {"id": "u-2"}}, "deviceHome": {"data": {"attributes": {"name": "Guam"}}}}},
-            ]}
+            ]
+            if (params or {}).get("status2"):
+                devices = [item for item in devices if item["attributes"]["status2"] == params["status2"]]
+            if (params or {}).get("model"):
+                models = {value.strip() for value in params["model"].split(",")}
+                devices = [item for item in devices if item["attributes"]["model"] in models]
+            return {"data": devices}
         raise AssertionError(f"Unexpected URL: {url}")
 
 
@@ -99,6 +105,7 @@ class BackendServerTests(unittest.TestCase):
             "office_presence_starter.csv",
             "axon_group_master_starter.csv",
             "site_group_relationship_starter.csv",
+            "device_status_map.csv",
         ]:
             shutil.copy2(backend_server.SUITE_ROOT / "governance_starters" / name, self.crosswalk_root / name)
         self.crosswalk_backup_dir = self.temp_path / "backups" / "crosswalks"
@@ -169,6 +176,15 @@ class BackendServerTests(unittest.TestCase):
         state = backend_server.SessionState(client_factory=FakeAxonClient)
         try:
             state.set_credentials("agency-1234", "client-id", "client-secret")
+            full_job = state.start_sync({"resources": ["Devices", "Groups"]})
+            deadline = time.time() + 5
+            full_result = state.job(full_job["jobId"])
+            while full_result["status"] in {"queued", "running"} and time.time() < deadline:
+                time.sleep(0.02)
+                full_result = state.job(full_job["jobId"])
+            self.assertEqual(full_result["status"], "complete", full_result.get("error"))
+            self.assertEqual(state.dashboard()["resourceCounts"]["Devices"], 3)
+
             job = state.start_sync({
                 "resources": ["Devices", "Groups"],
                 "deviceModel": "Body 4,Fleet 3",
@@ -183,7 +199,7 @@ class BackendServerTests(unittest.TestCase):
             self.assertEqual(result["status"], "complete", result.get("error"))
             self.assertEqual(result["currentResource"], "Devices")
             self.assertEqual(result["currentPage"], 1)
-            self.assertEqual(result["receivedRecords"], 3)
+            self.assertEqual(result["receivedRecords"], 1)
             dashboard = state.dashboard()
             self.assertEqual(dashboard["mode"], "live")
             self.assertEqual(dashboard["resourceCounts"]["Devices"], 3)
@@ -198,13 +214,219 @@ class BackendServerTests(unittest.TestCase):
             self.assertEqual(device_calls[0][1]["status2"], "ASSIGNED")
             self.assertEqual(device_calls[0][1]["homeId"], "home-1")
             self.assertEqual(device_calls[0][2], 5)
-            self.assertIsNotNone(state.resolve_download("devices"))
+            filtered_download = state.resolve_download("devices")
+            self.assertIsNotNone(filtered_download)
+            with filtered_download.open("r", encoding="utf-8-sig", newline="") as handle:
+                self.assertEqual(len(list(csv.DictReader(handle))), 1)
+            self.assertEqual(state.workspace.active_snapshot("Devices", prefer_full=True)["rowCount"], 3)
+            self.assertEqual(state.workspace.active_snapshot("Devices", prefer_full=False)["rowCount"], 1)
             self.assertIsNotNone(state.resolve_download("summary"))
             self.assertIsNotNone(state.resolve_download("assignments"))
             self.assertIsNotNone(state.resolve_download("device-status"))
             self.assertIsNotNone(state.resolve_download("exceptions"))
         finally:
             state.close()
+
+    def test_live_sync_maps_from_shared_sqlite_not_a_stale_csv_projection(self):
+        state = backend_server.SessionState(client_factory=FakeAxonClient)
+        try:
+            dataset = state.workspace.governance_dataset("device_home_crosswalk_starter")
+            rows = [dict(row) for row in dataset["rows"]]
+            rows[0].update({
+                "Device Home Name (API)": "Example Home Alpha",
+                "Normalized Device Home Key": "example home alpha",
+                "Mapping Status": "Mapped",
+                "Mapping Method": "Exact name",
+                "Confidence": "High",
+                "Review Notes": "Authoritative SQLite mapping for sync test.",
+            })
+            state.workspace.replace_governance_rows(
+                "device_home_crosswalk_starter",
+                rows,
+                dataset["revision"],
+                "test-sync-authority",
+                "test",
+            )
+            with (self.crosswalk_root / "device_home_crosswalk_starter.csv").open(
+                "r", encoding="utf-8-sig", newline=""
+            ) as handle:
+                stale_rows = list(csv.DictReader(handle))
+            self.assertNotEqual(stale_rows[0]["Mapping Status"], "Mapped")
+
+            state.set_credentials("agency-1234", "client-id", "client-secret")
+            job = state.start_sync({"resources": ["DeviceHomes"]})
+            deadline = time.time() + 5
+            result = state.job(job["jobId"])
+            while result["status"] in {"queued", "running"} and time.time() < deadline:
+                time.sleep(0.02)
+                result = state.job(job["jobId"])
+            self.assertEqual(result["status"], "complete", result.get("error"))
+            snapshot = state.workspace.active_snapshot("DeviceHomes")
+            mapped_home = next(
+                row for row in snapshot["rows"] if row["Normalized Device Home Key"] == "example home alpha"
+            )
+            self.assertEqual(mapped_home["Mapped Site ID"], rows[0]["Site ID"])
+        finally:
+            state.close()
+
+    def test_live_sync_uses_current_file_governed_device_status_map(self):
+        state = backend_server.SessionState(client_factory=FakeAxonClient)
+        try:
+            status_path = self.crosswalk_root / "device_status_map.csv"
+            with status_path.open("r", encoding="utf-8-sig", newline="") as handle:
+                reader = csv.DictReader(handle)
+                headers = list(reader.fieldnames or [])
+                rows = list(reader)
+            for row in rows:
+                if row["Raw Axon Device Status"] == "Assigned":
+                    row["Reporting State"] = "Reviewed Operational"
+            backend_server.write_csv(rows, headers, status_path)
+
+            state.set_credentials("agency-1234", "client-id", "client-secret")
+            job = state.start_sync({"resources": ["Devices"]})
+            deadline = time.time() + 5
+            result = state.job(job["jobId"])
+            while result["status"] in {"queued", "running"} and time.time() < deadline:
+                time.sleep(0.02)
+                result = state.job(job["jobId"])
+
+            self.assertEqual(result["status"], "complete", result.get("error"))
+            devices = state.workspace.active_snapshot("Devices", prefer_full=True)["rows"]
+            assigned = next(row for row in devices if row["Axon Device ID"] == "d-1")
+            self.assertEqual(assigned["Reporting Device State"], "Reviewed Operational")
+        finally:
+            state.close()
+
+    def test_confirmed_mapping_metrics_require_explicit_mapped_status(self):
+        target = self.crosswalk_root / "device_home_crosswalk_starter.csv"
+        with target.open("r", encoding="utf-8-sig", newline="") as handle:
+            headers = list(csv.DictReader(handle).fieldnames or [])
+        candidate = {header: "" for header in headers}
+        candidate.update({
+            "Site ID": "TEST-SITE-CANDIDATE",
+            "Component": "TEST",
+            "Region / AOR": "Candidate AOR",
+            "Device Home Name (API)": "Candidate Home",
+            "Normalized Device Home Key": "candidate home",
+            "Mapping Status": "Candidate",
+        })
+        mapped = {header: "" for header in headers}
+        mapped.update({
+            "Site ID": "TEST-SITE-MAPPED",
+            "Component": "TEST",
+            "Region / AOR": "Mapped AOR",
+            "Device Home Name (API)": "Mapped Home",
+            "Normalized Device Home Key": "mapped home",
+            "Mapping Status": "Mapped",
+        })
+        backend_server.write_csv([candidate, mapped], headers, target)
+        workspace = backend_server.governance_workspace()
+        workspace.migrate_governance_csvs(self.crosswalk_root)
+        group_dataset = workspace.governance_dataset("axon_group_crosswalk_starter")
+        group_rows = [dict(row) for row in group_dataset["rows"]]
+        group_rows[0].update({
+            "Axon Group ID": "group-candidate",
+            "Axon Group Name": "Candidate Group",
+            "Mapping Status": "Candidate",
+            "Review Notes": "Candidate relationship still requires review.",
+        })
+        group_rows[1].update({
+            "Axon Group ID": "group-mapped",
+            "Axon Group Name": "Mapped Group",
+            "Mapping Status": "Mapped",
+            "Review Notes": "Reviewed site relationship.",
+        })
+        workspace.replace_governance_rows(
+            "axon_group_crosswalk_starter",
+            group_rows,
+            group_dataset["revision"],
+            "test-group-crosswalk",
+            "test",
+        )
+
+        stale_projection = dict(mapped)
+        stale_projection["Mapping Status"] = "Candidate"
+        stale_projection["Region / AOR"] = "Stale CSV AOR"
+        backend_server.write_csv([candidate, stale_projection], headers, target)
+
+        payload = backend_server.build_dashboard_payload(
+            {
+                "Devices": [
+                    {
+                        "Axon Device ID": "device-candidate",
+                        "Serial Number": "TEST-CANDIDATE",
+                        "Device Model": "Body 4",
+                        "Device Status": "ASSIGNED",
+                        "Reporting Device State": "Assigned",
+                        "Assigned User ID": "user-1",
+                        "Device Home Name (API)": "Candidate Home",
+                        "Normalized Device Home Key": "candidate home",
+                        "Mapped Site ID": "STALE-SITE-ID",
+                    },
+                    {
+                        "Axon Device ID": "device-mapped",
+                        "Serial Number": "TEST-MAPPED",
+                        "Device Model": "Body 4",
+                        "Device Status": "ASSIGNED",
+                        "Reporting Device State": "Assigned",
+                        "Assigned User ID": "user-2",
+                        "Device Home Name (API)": "Mapped Home",
+                        "Normalized Device Home Key": "mapped home",
+                    },
+                ],
+                "DeviceHomes": [
+                    {
+                        "Device Home Name (API)": "Candidate Home",
+                        "Normalized Device Home Key": "candidate home",
+                        "Mapped Site ID": "STALE-SITE-ID",
+                    },
+                    {
+                        "Device Home Name (API)": "Mapped Home",
+                        "Normalized Device Home Key": "mapped home",
+                    },
+                ],
+                "Users": [],
+                "Groups": [
+                    {
+                        "Axon Group ID": "group-candidate",
+                        "Group Name": "Candidate Group",
+                        "Group Classification": "Site-Mapped",
+                        "Mapped Site ID": "STALE-GROUP-SITE",
+                        "Mapping Status": "Mapped",
+                    },
+                    {
+                        "Axon Group ID": "group-mapped",
+                        "Group Name": "Mapped Group",
+                        "Group Classification": "Unclassified",
+                        "Mapping Status": "Unmapped",
+                    },
+                ],
+            },
+            "2026-09-04T12:00:00Z",
+            {},
+            ["Devices", "DeviceHomes"],
+        )
+
+        self.assertEqual(payload["summary"]["mappedDevices"], 1)
+        self.assertEqual(payload["summary"]["mappingCompletion"], 50.0)
+        self.assertEqual(payload["summary"]["unmappedDeviceHomes"], 1)
+        self.assertEqual(payload["summary"]["regionCounts"], {"Unassigned": 1, "Mapped AOR": 1})
+        inventory = {row["serialNumber"]: row for row in payload["inventory"]}
+        self.assertEqual(inventory["TEST-CANDIDATE"]["mappedSiteId"], "")
+        self.assertEqual(inventory["TEST-CANDIDATE"]["component"], "")
+        self.assertEqual(inventory["TEST-MAPPED"]["mappedSiteId"], "TEST-SITE-MAPPED")
+        self.assertEqual(inventory["TEST-MAPPED"]["regionAor"], "Mapped AOR")
+        self.assertEqual(
+            [row["sourceId"] for row in payload["crosswalkReview"]],
+            ["Candidate Home", "Candidate Group"],
+        )
+        groups = {row["groupId"]: row for row in payload["groups"]}
+        self.assertEqual(groups["group-candidate"]["classification"], "Unclassified")
+        self.assertEqual(groups["group-candidate"]["mappedSiteId"], "")
+        self.assertEqual(groups["group-candidate"]["mappingStatus"], "Candidate")
+        self.assertEqual(groups["group-mapped"]["classification"], "Site-Mapped")
+        self.assertTrue(groups["group-mapped"]["mappedSiteId"])
+        self.assertEqual(payload["summary"]["groupClassificationCounts"], {"Unclassified": 1, "Site-Mapped": 1})
 
     def test_running_pull_can_stop_safely_without_replacing_dashboard(self):
         state = backend_server.SessionState(client_factory=SlowAuthenticateAxonClient)
@@ -223,6 +445,165 @@ class BackendServerTests(unittest.TestCase):
             self.assertEqual(state.dashboard()["mode"], "illustrative")
         finally:
             state.close()
+
+    def test_canceled_multi_resource_pull_does_not_activate_partial_snapshots(self):
+        state = backend_server.SessionState(client_factory=FakeAxonClient)
+        prior = state.workspace.activate_snapshot(
+            "DeviceHomes",
+            [{
+                "Device Home Name (API)": "Prior Home",
+                "Normalized Device Home Key": "prior home",
+                "Mapped Site ID": "",
+                "Mapped Component": "",
+                "Mapped Region / AOR": "",
+                "Mapping Status": "Unmapped",
+                "Last Sync At": "2026-09-04T00:00:00Z",
+                "Sync Status": "Synced",
+            }],
+            {"type": "full", "filters": {}},
+            "prior test baseline",
+        )
+
+        def cancel_after_first_resource(client, config, resource_name, resource_config, partner_id, **kwargs):
+            if resource_name == "DeviceHomes":
+                return ([{"attributes": {"name": "Replacement Home"}}], 1, "")
+            raise backend_server.PullCancelledError("Synthetic cancellation after one fetched resource.")
+
+        try:
+            state.set_credentials("agency-1234", "client-id", "client-secret")
+            with patch.object(backend_server, "fetch_resource", side_effect=cancel_after_first_resource):
+                job = state.start_sync({"resources": ["Devices"]})
+                deadline = time.time() + 5
+                result = state.job(job["jobId"])
+                while result["status"] in {"queued", "running", "cancel-requested"} and time.time() < deadline:
+                    time.sleep(0.02)
+                    result = state.job(job["jobId"])
+            self.assertEqual(result["status"], "canceled", result.get("error"))
+            active = state.workspace.active_snapshot("DeviceHomes")
+            self.assertEqual(active["snapshotId"], prior["snapshotId"])
+            self.assertEqual(active["rows"][0]["Device Home Name (API)"], "Prior Home")
+            self.assertIsNone(state.workspace.active_snapshot("Users"))
+            self.assertIsNone(state.workspace.active_snapshot("Devices"))
+        finally:
+            state.close()
+
+    def test_filtered_devices_without_a_full_snapshot_are_not_confirmed_metrics(self):
+        state = backend_server.SessionState(client_factory=FakeAxonClient)
+        try:
+            state.set_credentials("agency-1234", "client-id", "client-secret")
+            job = state.start_sync({
+                "resources": ["Devices"],
+                "deviceModel": "Body 4",
+                "deviceStatus": "ASSIGNED",
+            })
+            deadline = time.time() + 5
+            result = state.job(job["jobId"])
+            while result["status"] in {"queued", "running"} and time.time() < deadline:
+                time.sleep(0.02)
+                result = state.job(job["jobId"])
+            self.assertEqual(result["status"], "complete", result.get("error"))
+
+            dashboard = state.dashboard()
+
+            self.assertEqual(dashboard["mode"], "filtered")
+            self.assertFalse(dashboard["confirmedDeviceBaseline"])
+            self.assertEqual(dashboard["deviceMetricsScope"], "filtered")
+            self.assertEqual(dashboard["summary"]["totalDevices"], 1)
+            self.assertEqual(dashboard["baselineScopes"]["Devices"]["type"], "filtered")
+            preferred = state.workspace.active_snapshot("Devices", prefer_full=True)
+            self.assertEqual(preferred["scope"]["type"], "filtered")
+            self.assertNotIn("Devices", state._active_baseline()[0])
+            self.assertEqual(state.workspace.active_snapshot("Devices", prefer_full=False)["rowCount"], 1)
+        finally:
+            state.close()
+
+    def test_users_only_refresh_does_not_export_unknown_device_counts_as_zero(self):
+        state = backend_server.SessionState(client_factory=FakeAxonClient)
+        try:
+            state.set_credentials("agency-1234", "client-id", "client-secret")
+            job = state.start_sync({"resources": ["Users"]})
+            deadline = time.time() + 5
+            result = state.job(job["jobId"])
+            while result["status"] in {"queued", "running"} and time.time() < deadline:
+                time.sleep(0.02)
+                result = state.job(job["jobId"])
+            self.assertEqual(result["status"], "complete", result.get("error"))
+
+            dashboard = state.dashboard()
+            self.assertEqual(dashboard["mode"], "partial")
+            self.assertEqual(dashboard["deviceMetricsScope"], "unavailable")
+            self.assertIsNone(dashboard["summary"]["totalDevices"])
+            self.assertIsNone(dashboard["summary"]["unmappedDeviceHomes"])
+            self.assertIsNone(dashboard["summary"]["totalGroups"])
+            self.assertEqual(dashboard["projectedSummary"]["confirmedUsers"], 3)
+            self.assertTrue(all(row["deviceCount"] is None for row in dashboard["assignments"]))
+            self.assertNotIn("Devices", dashboard["resources"])
+            self.assertEqual(dashboard["availableDownloads"], ["summary", "users"])
+            self.assertIsNone(state.resolve_download("assignments"))
+            self.assertIsNone(state.resolve_download("device-status"))
+            self.assertIsNone(state.resolve_download("exceptions"))
+        finally:
+            state.close()
+
+    def test_pending_users_remain_unprojected_without_confirmed_users_snapshot(self):
+        state = backend_server.SessionState(client_factory=FakeAxonClient)
+        try:
+            state.workspace.activate_snapshot(
+                "Groups",
+                [{"Axon Group ID": "g-1", "Group Name": "TEST Prototype Users"}],
+                {"type": "full", "filters": {}},
+            )
+            state.workspace.create_run(
+                "Pending without Users baseline",
+                "synthetic-test",
+                [{
+                    "rowId": "row-1",
+                    "email": "pending.user@example.test",
+                    "firstName": "Pending",
+                    "lastName": "User",
+                    "validationState": "Ready",
+                    "existingAccount": False,
+                    "groupExternalId": "",
+                }],
+                {"blockerCount": 0},
+                {"userChunks": [], "groupChunks": []},
+                "Ready for Preview",
+            )
+
+            dashboard = state.dashboard()
+
+            self.assertEqual(dashboard["mode"], "partial")
+            self.assertIsNone(dashboard["summary"]["totalUsers"])
+            self.assertIsNone(dashboard["projectedSummary"]["confirmedUsers"])
+            self.assertIsNone(dashboard["projectedSummary"]["baselinePlusPendingUsers"])
+            self.assertEqual(dashboard["pendingSummary"]["proposedCreations"], 1)
+        finally:
+            state.close()
+
+    def test_persisted_baseline_does_not_advertise_expired_session_downloads(self):
+        state = backend_server.SessionState(client_factory=FakeAxonClient)
+        state.set_credentials("agency-1234", "client-id", "client-secret")
+        job = state.start_sync({"resources": ["Devices"]})
+        deadline = time.time() + 5
+        result = state.job(job["jobId"])
+        while result["status"] in {"queued", "running"} and time.time() < deadline:
+            time.sleep(0.02)
+            result = state.job(job["jobId"])
+        self.assertEqual(result["status"], "complete", result.get("error"))
+        self.assertIn("devices", state.dashboard()["availableDownloads"])
+        state.close()
+
+        reopened = backend_server.SessionState(client_factory=FakeAxonClient)
+        try:
+            dashboard = reopened.dashboard()
+            self.assertEqual(dashboard["mode"], "live")
+            self.assertEqual(dashboard["summary"]["totalDevices"], 3)
+            self.assertEqual(dashboard["availableDownloads"], [])
+            self.assertEqual(dashboard["downloadScope"], {})
+            self.assertIsNone(reopened.resolve_download("devices"))
+            self.assertIsNone(reopened.resolve_download("summary"))
+        finally:
+            reopened.close()
 
     def test_auto_port_uses_next_loopback_port_when_requested_port_is_busy(self):
         blocker = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -422,6 +803,73 @@ class BackendServerTests(unittest.TestCase):
             )
         self.assertEqual(target.read_bytes(), before_conflict)
         self.assertEqual(len(list(self.crosswalk_backup_dir.glob("*.csv"))), backup_count)
+
+    def test_projection_failure_does_not_misreport_the_authoritative_sqlite_commit(self):
+        target = self.crosswalk_root / "device_home_crosswalk_starter.csv"
+        original = target.read_bytes()
+        listed = backend_server.list_crosswalk("device-homes", page=1, page_size=25)
+        original_notes = listed["rows"][0]["values"]["Review Notes"]
+
+        with patch.object(backend_server, "_write_crosswalk_atomic", side_effect=OSError("synthetic projection failure")):
+            result = backend_server.update_crosswalk_row(
+                "device-homes",
+                1,
+                {
+                    "changes": {"Review Notes": "Saved in SQLite while projection refresh is unavailable."},
+                    "expected": {"Review Notes": original_notes},
+                },
+            )
+
+        self.assertEqual(result["projectionStatus"], "warning")
+        self.assertIn("shared workspace was saved", result["projectionWarning"])
+        self.assertEqual(result["backupFileName"], "")
+        self.assertEqual(target.read_bytes(), original)
+        persisted = backend_server.governance_workspace().governance_dataset("device_home_crosswalk_starter")
+        self.assertEqual(
+            persisted["rows"][0]["Review Notes"],
+            "Saved in SQLite while projection refresh is unavailable.",
+        )
+        self.assertTrue(backend_server.governance_workspace().verify_audit_chain()["valid"])
+
+    def test_cross_process_revision_change_blocks_a_stale_governance_overwrite(self):
+        target = self.crosswalk_root / "device_home_crosswalk_starter.csv"
+        original_projection = target.read_bytes()
+        backend_server.list_crosswalk("device-homes", page=1, page_size=25)
+        workspace = backend_server.governance_workspace()
+        original_replace = workspace.replace_governance_rows
+        raced = False
+
+        def replace_after_concurrent_change(dataset_key, rows, expected_revision, event_type, reviewer, details=None):
+            nonlocal raced
+            if not raced:
+                raced = True
+                latest = workspace.governance_dataset(dataset_key)
+                concurrent_rows = [dict(row) for row in latest["rows"]]
+                concurrent_rows[0]["Review Notes"] = "Concurrent shared-workspace decision."
+                original_replace(
+                    dataset_key,
+                    concurrent_rows,
+                    latest["revision"],
+                    "test-concurrent-change",
+                    "other-process",
+                )
+            return original_replace(dataset_key, rows, expected_revision, event_type, reviewer, details)
+
+        with patch.object(backend_server, "governance_workspace", return_value=workspace), patch.object(
+            workspace,
+            "replace_governance_rows",
+            side_effect=replace_after_concurrent_change,
+        ):
+            with self.assertRaises(backend_server.CrosswalkConflictError):
+                backend_server.update_crosswalk_row(
+                    "device-homes",
+                    1,
+                    {"changes": {"Review Notes": "Stale local edit."}},
+                )
+
+        persisted = workspace.governance_dataset("device_home_crosswalk_starter")
+        self.assertEqual(persisted["rows"][0]["Review Notes"], "Concurrent shared-workspace decision.")
+        self.assertEqual(target.read_bytes(), original_projection)
 
     def test_crosswalk_unique_ids_are_validated_before_write(self):
         backend_server.update_crosswalk_row(
@@ -723,12 +1171,26 @@ class BackendServerTests(unittest.TestCase):
             self.assertNotIn(b"client-secret-sentinel", serialized)
             self.assertNotIn(b"partner-secret-sentinel", serialized)
 
+            dataset = state.workspace.governance_dataset("device_home_crosswalk_starter")
+            authoritative_rows = [dict(row) for row in dataset["rows"]]
+            authoritative_rows[0]["Review Notes"] = "SQLite authority marker for export."
+            state.workspace.replace_governance_rows(
+                "device_home_crosswalk_starter",
+                authoritative_rows,
+                dataset["revision"],
+                "test-export-authority",
+                "test",
+            )
+            stale_projection = (self.crosswalk_root / "device_home_crosswalk_starter.csv").read_bytes()
+
             handler = CapturingHandler("/api/crosswalks/device-homes/export")
             handler.do_GET()
             status, file_name, exported = handler.captured
             self.assertEqual(status, 200)
             self.assertEqual(file_name, "device_home_crosswalk_starter.csv")
-            self.assertEqual(exported, (self.crosswalk_root / "device_home_crosswalk_starter.csv").read_bytes())
+            self.assertNotEqual(exported, stale_projection)
+            exported_rows = list(csv.DictReader(exported.decode("utf-8-sig").splitlines()))
+            self.assertEqual(exported_rows[0]["Review Notes"], "SQLite authority marker for export.")
             self.assertNotIn(b"client-secret-sentinel", exported)
         finally:
             state.close()

@@ -15,12 +15,12 @@ Run setup once, then use the Provisioning or Geographic CMD launcher. The launch
 1. Paste rows or upload CSV/XLSX. Email and Role are required; Group Name is optional.
 2. Confirm detected columns when the mapper appears.
 3. Select the approved directory provider and start enrichment.
-4. Review blockers: no directory match, duplicate email, disabled directory account, invalid Role, missing Location/AOR, unmapped job title, or unresolved/duplicate Group.
+4. Review blockers: no directory match, duplicate email, disabled directory account, invalid Role, or missing required identity output. Missing Location/AOR, unmapped Job Title, and blank/unresolved optional Group assignments are warnings and do not block an otherwise eligible user import.
 5. Continue to Preview when blockers are cleared.
 
 ### Edit Preview
 
-You may edit Role, Group, Location, Personnel AOR, Job Category, Supervisor Email, and Supervisor UPN. Identity fields must be corrected at enrichment/reconciliation. Every row or bulk change needs a reason and creates a new revision.
+You may edit Role, Group, Location, Personnel AOR, Job Category, Supervisor Email, and Supervisor UPN. Use the Group drop-down to select an exact current Group or choose **No Group assignment**; a blank Group omits the Group relationship row but retains the user row. Identity fields must be corrected at enrichment/reconciliation. Every row or bulk change needs a reason and creates a new revision.
 
 For existing users, open the account-update review, compare current and proposed fields, and select **Approve N account updates and continue**. Confirm the Submit page says nothing has been submitted yet.
 
@@ -40,7 +40,7 @@ Use separate least-privilege Axon clients for reads and writes. Enter credential
 
 ### Govern mappings
 
-Review the Role catalog, directory attributes, Location/AOR, exact title/category, Group rules, Axon Group master/hierarchy, facilities, office presences, and Device Home/geographic tables. Provide mapping method, confidence, reviewer, and review notes. Resolve a conflict by reloading before resaving.
+Review the Role catalog, directory attributes, Location/AOR, exact title/category, Group rules, Axon Group master/hierarchy, facilities, office presences, and Device Home/geographic tables. Newly observed directory Location/Component and Job Title values appear automatically as `Needs review` candidates. They do not block user import. Provide mapping method, confidence, reviewer, and review notes when approving a candidate. Resolve a conflict by reloading before resaving.
 
 ### Submit to Axon
 

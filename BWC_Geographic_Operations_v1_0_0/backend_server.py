@@ -43,8 +43,8 @@ from axon_sync import (
     AxonClient,
     PullCancelledError,
     fetch_resource,
-    load_lookup_csv,
     map_rows,
+    reviewed_site_mapping,
     resolve_url,
     write_assignment_and_status_reports,
     write_csv,
@@ -422,7 +422,7 @@ def governance_file_path(file_name: str) -> Path:
     return path
 
 
-def _read_crosswalk(key: str) -> tuple[dict[str, Any], Path, list[str], list[dict[str, str]]]:
+def _read_crosswalk(key: str) -> tuple[dict[str, Any], Path, list[str], list[dict[str, str]], int]:
     spec = get_crosswalk_spec(key)
     path = crosswalk_path(key)
     try:
@@ -440,7 +440,7 @@ def _read_crosswalk(key: str) -> tuple[dict[str, Any], Path, list[str], list[dic
     missing = [field for field in spec["editableFields"] if field not in headers]
     if missing:
         raise RuntimeError(f"{spec['fileName']} is missing required columns: {', '.join(missing)}")
-    return spec, path, headers, rows
+    return spec, path, headers, rows, int(dataset["revision"])
 
 
 def _positive_int(value: object, label: str, default: int) -> int:
@@ -471,7 +471,7 @@ def list_crosswalk(
         raise UserInputError("Search must be 250 characters or fewer and cannot contain control characters.")
 
     with CROSSWALK_LOCK:
-        spec, _, headers, all_rows = _read_crosswalk(key)
+        spec, _, headers, all_rows, _ = _read_crosswalk(key)
         indexed_rows = list(enumerate(all_rows, start=1))
     if search_text:
         needle = search_text.casefold()
@@ -545,7 +545,7 @@ def _validate_crosswalk_option(spec: dict[str, Any], field: str, value: str) -> 
 
 
 def _crosswalk_reference_values(key: str, field: str) -> set[str]:
-    _, _, headers, rows = _read_crosswalk(key)
+    _, _, headers, rows, _ = _read_crosswalk(key)
     if field not in headers:
         raise RuntimeError(f"{field} is missing from {key}.")
     return {row.get(field, "").strip().casefold() for row in rows if row.get(field, "").strip()}
@@ -753,6 +753,62 @@ def _write_crosswalk_atomic(
     return backup_path
 
 
+def _refresh_crosswalk_projection(
+    workspace: SharedWorkspace,
+    path: Path,
+    headers: list[str],
+    rows: list[dict[str, str]],
+    event_type: str,
+    event_details: dict[str, Any],
+) -> dict[str, str]:
+    """Refresh the derived CSV without misreporting an authoritative DB commit."""
+    try:
+        backup_path = _write_crosswalk_atomic(path, headers, rows)
+    except Exception:
+        warning = (
+            "The shared workspace was saved, but its CSV review/export projection could not be refreshed. "
+            "Retry the save or export after checking local file access."
+        )
+        try:
+            workspace.audit(
+                "geographic-operations",
+                "governance-projection-refresh",
+                "failure",
+                {"dataset": path.stem, "projection": path.name},
+            )
+        except Exception:
+            pass
+        return {"projectionStatus": "warning", "projectionWarning": warning, "backupFileName": ""}
+
+    warning = ""
+    try:
+        append_event(
+            "geographic-operations",
+            event_type,
+            "success",
+            {**event_details, "backupFile": backup_path.name},
+        )
+    except Exception:
+        warning = (
+            "The shared workspace and CSV projection were saved, but the supplemental local audit log "
+            "could not be updated. The shared workspace audit chain remains authoritative."
+        )
+        try:
+            workspace.audit(
+                "geographic-operations",
+                "supplemental-audit-log",
+                "failure",
+                {"dataset": path.stem, "projection": path.name},
+            )
+        except Exception:
+            pass
+    return {
+        "projectionStatus": "warning" if warning else "updated",
+        "projectionWarning": warning,
+        "backupFileName": backup_path.name,
+    }
+
+
 def update_crosswalk_row(key: str, row_number: object, body: dict[str, Any]) -> dict[str, Any]:
     number = _positive_int(row_number, "Row number", 0)
     changes = body.get("changes")
@@ -763,7 +819,7 @@ def update_crosswalk_row(key: str, row_number: object, body: dict[str, Any]) -> 
         raise UserInputError("Expected values must be a JSON object when provided.")
 
     with CROSSWALK_LOCK:
-        spec, path, headers, rows = _read_crosswalk(key)
+        spec, path, headers, rows, dataset_revision = _read_crosswalk(key)
         if number > len(rows):
             raise UserInputError(f"Row number must be between 1 and {len(rows)}.")
         invalid_changes = sorted(set(changes) - set(spec["editableFields"]))
@@ -789,7 +845,6 @@ def update_crosswalk_row(key: str, row_number: object, body: dict[str, Any]) -> 
             raise UserInputError("Review Notes are required for every governed mapping change.")
         _validate_unique_fields(spec, rows, row_index)
         workspace = governance_workspace()
-        dataset_revision = workspace.governance_dataset(path.stem)["revision"]
         try:
             workspace.replace_governance_rows(
                 path.stem,
@@ -808,28 +863,20 @@ def update_crosswalk_row(key: str, row_number: object, body: dict[str, Any]) -> 
             )
         except RevisionConflict as exc:
             raise CrosswalkConflictError(str(exc)) from exc
-        backup_path = _write_crosswalk_atomic(path, headers, rows)
-        try:
-            append_event(
-                "geographic-operations",
-                "governance-row-updated",
-                "success",
-                {
-                    "table": key,
-                    "rowNumber": number,
-                    "changedFields": sorted(changes),
-                    "backupFile": backup_path.name,
-                },
-            )
-        except Exception:
-            shutil.copy2(backup_path, path)
-            raise RuntimeError("The governed file was restored because the durable audit record could not be written.")
+        projection = _refresh_crosswalk_projection(
+            workspace,
+            path,
+            headers,
+            rows,
+            "governance-row-updated",
+            {"table": key, "rowNumber": number, "changedFields": sorted(changes)},
+        )
 
     return {
         "key": key,
         "rowNumber": number,
         "row": {"rowNumber": number, "values": dict(current)},
-        "backupFileName": backup_path.name,
+        **projection,
         "savedAt": utc_now_iso(),
         "storage": "shared-sqlite",
         "axonWrite": False,
@@ -842,7 +889,7 @@ def create_crosswalk_row(key: str, body: dict[str, Any]) -> dict[str, Any]:
         raise UserInputError("Values must be a non-empty JSON object.")
 
     with CROSSWALK_LOCK:
-        spec, path, headers, rows = _read_crosswalk(key)
+        spec, path, headers, rows, dataset_revision = _read_crosswalk(key)
         if not spec.get("allowCreate"):
             raise UserInputError(f"New rows cannot be added to {spec['fileName']} from the local app.")
         invalid_fields = sorted(set(values) - set(spec["editableFields"]))
@@ -884,7 +931,6 @@ def create_crosswalk_row(key: str, body: dict[str, Any]) -> dict[str, Any]:
         row_index = len(rows) - 1
         _validate_unique_fields(spec, rows, row_index)
         workspace = governance_workspace()
-        dataset_revision = workspace.governance_dataset(path.stem)["revision"]
         try:
             workspace.replace_governance_rows(
                 path.stem,
@@ -902,29 +948,25 @@ def create_crosswalk_row(key: str, body: dict[str, Any]) -> dict[str, Any]:
             )
         except RevisionConflict as exc:
             raise CrosswalkConflictError(str(exc)) from exc
-        backup_path = _write_crosswalk_atomic(path, headers, rows)
-        try:
-            append_event(
-                "geographic-operations",
-                "governance-row-created",
-                "success",
-                {
-                    "table": key,
-                    "rowNumber": row_index + 1,
-                    "populatedFields": sorted(field for field, value in row.items() if value),
-                    "backupFile": backup_path.name,
-                },
-            )
-        except Exception:
-            shutil.copy2(backup_path, path)
-            raise RuntimeError("The governed file was restored because the durable audit record could not be written.")
+        projection = _refresh_crosswalk_projection(
+            workspace,
+            path,
+            headers,
+            rows,
+            "governance-row-created",
+            {
+                "table": key,
+                "rowNumber": row_index + 1,
+                "populatedFields": sorted(field for field, value in row.items() if value),
+            },
+        )
 
     row_number = row_index + 1
     return {
         "key": key,
         "rowNumber": row_number,
         "row": {"rowNumber": row_number, "values": dict(row)},
-        "backupFileName": backup_path.name,
+        **projection,
         "savedAt": utc_now_iso(),
         "storage": "shared-sqlite",
         "axonWrite": False,
@@ -935,10 +977,10 @@ def local_governance_summary() -> dict[str, Any]:
     """Return non-sensitive aggregates from the governed local model files."""
 
     with CROSSWALK_LOCK:
-        _, _, _, facilities = _read_crosswalk("facility-master")
-        _, _, _, offices = _read_crosswalk("office-presences")
-        _, _, _, groups = _read_crosswalk("group-master")
-        _, _, _, relationships = _read_crosswalk("site-group-relationships")
+        _, _, _, facilities, _ = _read_crosswalk("facility-master")
+        _, _, _, offices, _ = _read_crosswalk("office-presences")
+        _, _, _, groups, _ = _read_crosswalk("group-master")
+        _, _, _, relationships, _ = _read_crosswalk("site-group-relationships")
 
     office_by_facility: dict[str, list[dict[str, str]]] = defaultdict(list)
     for office in offices:
@@ -991,7 +1033,7 @@ def local_governance_summary() -> dict[str, Any]:
             "total": len(relationships),
             "mapped": sum(1 for row in relationships if row.get("Mapping Status") == "Mapped"),
         },
-        "storage": "local-file",
+        "storage": "shared-sqlite",
         "axonWrite": False,
     }
 
@@ -1091,7 +1133,55 @@ def counter_text(values: list[str]) -> str:
 def region_bucket(value: str) -> str:
     # A Device Home name is a comparison signal, not geographic authority.
     # Operational buckets must come from the reviewed local crosswalk.
-    return "Needs review" if value.strip() else "Unassigned"
+    return value.strip() or "Unassigned"
+
+
+def apply_current_group_governance(
+    groups: list[dict[str, Any]],
+    site_rows: list[dict[str, str]],
+    non_site_rows: list[dict[str, str]],
+) -> list[dict[str, Any]]:
+    """Overlay current governed Group decisions onto an immutable Axon snapshot."""
+    site_by_id = {
+        str(row.get("Axon Group ID") or "").strip(): row
+        for row in site_rows
+        if str(row.get("Axon Group ID") or "").strip()
+    }
+    non_site_by_id = {
+        str(row.get("Axon Group ID") or "").strip(): row
+        for row in non_site_rows
+        if str(row.get("Axon Group ID") or "").strip()
+    }
+    current: list[dict[str, Any]] = []
+    for source in groups:
+        group = dict(source)
+        group_id = str(group.get("Axon Group ID") or "").strip()
+        site_source = site_by_id.get(group_id, {})
+        site_mapping = reviewed_site_mapping(site_source)
+        non_site = non_site_by_id.get(group_id, {})
+        group["Mapped Site ID"] = site_mapping.get("Site ID", "")
+        group["Mapped Component"] = site_mapping.get("Component", "")
+        group["Mapped Region / AOR"] = site_mapping.get("Region / AOR", "")
+        if site_mapping:
+            group["Group Classification"] = "Site-Mapped"
+            group["Command Hierarchy Level"] = "Site / Office"
+            group["Reporting Inclusion"] = "Include"
+            group["Mapping Status"] = "Mapped"
+            group["Review Notes"] = site_source.get("Review Notes", "Mapped through reviewed Axon Group crosswalk.")
+        elif non_site:
+            group["Group Classification"] = non_site.get("Group Classification", "Unclassified")
+            group["Command Hierarchy Level"] = non_site.get("Command Hierarchy Level", "")
+            group["Reporting Inclusion"] = non_site.get("Reporting Inclusion", "Review")
+            group["Mapping Status"] = non_site.get("Mapping Status", "Unmapped")
+            group["Review Notes"] = non_site.get("Review Notes", "")
+        else:
+            group["Group Classification"] = "Unclassified"
+            group["Command Hierarchy Level"] = ""
+            group["Reporting Inclusion"] = "Review"
+            group["Mapping Status"] = site_source.get("Mapping Status", "Unmapped")
+            group["Review Notes"] = site_source.get("Review Notes", "")
+        current.append(group)
+    return current
 
 
 def build_dashboard_payload(
@@ -1099,17 +1189,31 @@ def build_dashboard_payload(
     last_sync_at: str,
     filters: dict[str, str],
     job_resources: list[str],
+    *,
+    mode: str = "live",
 ) -> dict[str, Any]:
     devices = rows.get("Devices", [])
     users = rows.get("Users", [])
     homes = rows.get("DeviceHomes", [])
     groups = rows.get("Groups", [])
+    devices_available = "Devices" in rows
+    users_available = "Users" in rows
+    homes_available = "DeviceHomes" in rows or devices_available
+    groups_available = "Groups" in rows
 
-    home_crosswalk = load_lookup_csv(
-        str(crosswalk_path("device-homes")),
-        "Normalized Device Home Key",
-        ["Site ID", "Component", "Region / AOR", "Mapping Status"],
-    )
+    with CROSSWALK_LOCK:
+        _, _, _, home_crosswalk_rows, _ = _read_crosswalk("device-homes")
+        _, _, _, group_crosswalk_rows, _ = _read_crosswalk("axon-groups")
+        _, _, _, non_site_group_rows, _ = _read_crosswalk("non-site-groups")
+    home_crosswalk = {
+        str(row.get("Normalized Device Home Key") or "").strip(): {
+            field: str(row.get(field) or "").strip()
+            for field in ("Site ID", "Component", "Region / AOR", "Mapping Status")
+        }
+        for row in home_crosswalk_rows
+        if str(row.get("Normalized Device Home Key") or "").strip()
+    }
+    groups = apply_current_group_governance(groups, group_crosswalk_rows, non_site_group_rows)
 
     assigned_by_user: dict[str, list[dict[str, Any]]] = defaultdict(list)
     inventory: list[dict[str, Any]] = []
@@ -1123,8 +1227,8 @@ def build_dashboard_payload(
         if owner_id:
             assigned_by_user[owner_id].append(device)
         key = str(device.get("Normalized Device Home Key") or "").strip()
-        crosswalk = home_crosswalk.get(key, {})
-        mapped_site = str(device.get("Mapped Site ID") or crosswalk.get("Site ID") or "").strip()
+        crosswalk = reviewed_site_mapping(home_crosswalk.get(key, {}))
+        mapped_site = str(crosswalk.get("Site ID") or "").strip()
         region = str(crosswalk.get("Region / AOR") or "").strip()
         component = str(crosswalk.get("Component") or "").strip()
         reporting_state = title_state(device.get("Reporting Device State"))
@@ -1184,16 +1288,15 @@ def build_dashboard_payload(
             "additionalGroupCount": 0,
             "groupDataStatus": "Not observed in the current Users pull contract",
             "userStatus": str(user.get("User Status") or ""),
-            "deviceCount": len(assigned),
-            "deviceModels": "; ".join(models) or "—",
-            "deviceStates": counter_text(states),
+            "deviceCount": len(assigned) if mode != "partial" else None,
+            "deviceModels": (
+                "; ".join(models) or "—"
+                if mode != "partial"
+                else "Full Devices baseline required"
+            ),
+            "deviceStates": counter_text(states) if mode != "partial" else "Unavailable",
         })
 
-    mapped_home_keys = {
-        str(home.get("Normalized Device Home Key") or "").strip()
-        for home in homes
-        if str(home.get("Mapped Site ID") or "").strip()
-    }
     observed_home_keys = {
         str(home.get("Normalized Device Home Key") or "").strip()
         for home in homes
@@ -1205,11 +1308,17 @@ def build_dashboard_payload(
             for device in devices
             if str(device.get("Normalized Device Home Key") or "").strip()
         }
+    mapped_home_keys = {
+        key
+        for key in observed_home_keys
+        if reviewed_site_mapping(home_crosswalk.get(key, {}))
+    }
     unmapped_homes = len(observed_home_keys - mapped_home_keys)
 
     crosswalk_review: list[dict[str, str]] = []
     for home in homes:
-        if str(home.get("Mapped Site ID") or "").strip():
+        home_key = str(home.get("Normalized Device Home Key") or "").strip()
+        if reviewed_site_mapping(home_crosswalk.get(home_key, {})):
             continue
         crosswalk_review.append({
             "sourceType": "Device Home",
@@ -1221,7 +1330,7 @@ def build_dashboard_payload(
             "reviewNotes": "Map the observed API name to a physical site and organizational AOR.",
         })
     for group in groups:
-        if str(group.get("Mapping Status") or "").casefold() not in {"unmapped", "review", ""}:
+        if str(group.get("Mapping Status") or "").casefold() in {"mapped", "classified", "registered non-site"}:
             continue
         crosswalk_review.append({
             "sourceType": "Axon Group",
@@ -1257,34 +1366,36 @@ def build_dashboard_payload(
             "mappedDevices": component_mapped,
             "mappingCompletion": round((component_mapped / len(component_inventory)) * 100, 1) if component_inventory else 0.0,
             "unmappedDeviceHomes": len(component_unmapped_homes),
-            "totalUsers": len(users),
-            "totalGroups": len(groups),
-            "roleExceptions": sum(1 for row in assignments if row.get("roleException")),
+            "totalUsers": len(users) if users_available else None,
+            "totalGroups": len(groups) if groups_available else None,
+            "roleExceptions": sum(1 for row in assignments if row.get("roleException")) if users_available else None,
             "regionCounts": dict(component_region_counts),
             "dispositionCounts": dict(component_dispositions),
-            "groupClassificationCounts": dict(group_counts),
+            "groupClassificationCounts": dict(group_counts) if groups_available else {},
         }
 
     return {
-        "mode": "live",
+        "mode": mode,
+        "confirmedDeviceBaseline": mode == "live",
+        "deviceMetricsScope": "full" if mode == "live" else ("filtered" if mode == "filtered" else "unavailable"),
         "lastSyncAt": last_sync_at,
         "filters": filters,
         "resources": job_resources,
-        "resourceCounts": {name: len(rows.get(name, [])) for name in RESOURCE_ORDER},
+        "resourceCounts": {name: len(rows[name]) if name in rows else None for name in RESOURCE_ORDER},
         "summary": {
-            "totalDevices": len(devices),
-            "assignedDevices": assigned_count,
-            "unassignedDevices": len(devices) - assigned_count,
-            "inventoryExceptions": exceptions,
-            "mappedDevices": mapped_devices,
-            "mappingCompletion": mapping_completion,
-            "unmappedDeviceHomes": unmapped_homes,
-            "totalUsers": len(users),
-            "totalGroups": len(groups),
-            "roleExceptions": sum(1 for row in assignments if row.get("roleException")),
+            "totalDevices": len(devices) if mode != "partial" else None,
+            "assignedDevices": assigned_count if mode != "partial" else None,
+            "unassignedDevices": len(devices) - assigned_count if mode != "partial" else None,
+            "inventoryExceptions": exceptions if mode != "partial" else None,
+            "mappedDevices": mapped_devices if mode != "partial" else None,
+            "mappingCompletion": mapping_completion if mode != "partial" else None,
+            "unmappedDeviceHomes": unmapped_homes if homes_available else None,
+            "totalUsers": len(users) if users_available else None,
+            "totalGroups": len(groups) if groups_available else None,
+            "roleExceptions": sum(1 for row in assignments if row.get("roleException")) if users_available else None,
             "regionCounts": dict(region_counts),
             "dispositionCounts": dict(disposition_counts),
-            "groupClassificationCounts": dict(group_counts),
+            "groupClassificationCounts": dict(group_counts) if groups_available else {},
         },
         "componentSummaries": component_summaries,
         "inventory": inventory[:500],
@@ -1326,20 +1437,28 @@ class SessionState:
         self._rows: dict[str, list[dict[str, Any]]] = {}
         self._dashboard: dict[str, Any] | None = None
         self._downloads: dict[str, Path] = {}
+        self._download_scope: dict[str, Any] = {}
         self._temporary_dir = Path(tempfile.mkdtemp(prefix="bwc-axon-live-"))
         self.client_factory = client_factory
         self.workspace = SharedWorkspace()
         self.workspace.migrate_governance_csvs(CROSSWALK_ROOT)
-        persisted: dict[str, list[dict[str, Any]]] = {}
-        activated_at = ""
-        for resource in RESOURCE_ORDER:
-            snapshot = self.workspace.active_snapshot(resource)
-            if snapshot:
-                persisted[resource] = snapshot["rows"]
-                activated_at = max(activated_at, snapshot.get("activatedAt") or "")
+        persisted, activated_at, scopes, mode = self._dashboard_source()
         if persisted:
+            device_scope = scopes.get("Devices", {})
+            device_filters = dict(device_scope.get("filters") or {}) if mode == "filtered" else {}
             self._rows = persisted
-            self._dashboard = build_dashboard_payload(persisted, activated_at or utc_now_iso(), {}, list(persisted))
+            self._dashboard = build_dashboard_payload(
+                persisted,
+                activated_at or utc_now_iso(),
+                {
+                    "deviceModel": str(device_filters.get("model") or ""),
+                    "deviceStatus": str(device_filters.get("status2") or ""),
+                    "deviceHomeId": str(device_filters.get("homeId") or ""),
+                },
+                list(persisted),
+                mode=mode,
+            )
+            self._dashboard["baselineScopes"] = scopes
 
     def close(self) -> None:
         with self._lock:
@@ -1347,7 +1466,57 @@ class SessionState:
             self._rows = {}
             self._dashboard = None
             self._downloads = {}
+            self._download_scope = {}
         shutil.rmtree(self._temporary_dir, ignore_errors=True)
+
+    def _active_baseline(
+        self,
+        operational_view: dict[str, Any] | None = None,
+    ) -> tuple[dict[str, list[dict[str, Any]]], str, dict[str, dict[str, Any]]]:
+        view = operational_view or self.workspace.read_operational_view()
+        active_snapshots = list(view.get("snapshots") or [])
+        rows: dict[str, list[dict[str, Any]]] = {}
+        scopes: dict[str, dict[str, Any]] = {}
+        activated_at = ""
+        for resource in RESOURCE_ORDER:
+            snapshot = next(
+                (
+                    item
+                    for item in active_snapshots
+                    if item.get("resource") == resource
+                    and str((item.get("scope") or {}).get("type") or "") == "full"
+                ),
+                None,
+            )
+            if not snapshot:
+                continue
+            rows[resource] = snapshot["rows"]
+            scopes[resource] = dict(snapshot.get("scope") or {})
+            activated_at = max(activated_at, str(snapshot.get("activatedAt") or ""))
+        return rows, activated_at, scopes
+
+    def _dashboard_source(
+        self,
+        operational_view: dict[str, Any] | None = None,
+    ) -> tuple[dict[str, list[dict[str, Any]]], str, dict[str, dict[str, Any]], str]:
+        """Return confirmed full rows, or an explicitly scoped non-baseline view."""
+        view = operational_view or self.workspace.read_operational_view()
+        rows, activated_at, scopes = self._active_baseline(view)
+        if "Devices" in rows:
+            return rows, activated_at, scopes, "live"
+
+        latest_devices = next(
+            (item for item in (view.get("snapshots") or []) if item.get("resource") == "Devices"),
+            None,
+        )
+        latest_scope = dict((latest_devices or {}).get("scope") or {})
+        if latest_devices and latest_scope.get("type") == "filtered":
+            rows["Devices"] = latest_devices["rows"]
+            scopes["Devices"] = latest_scope
+            activated_at = max(activated_at, str(latest_devices.get("activatedAt") or ""))
+            return rows, activated_at, scopes, "filtered"
+
+        return rows, activated_at, scopes, "partial" if rows else "illustrative"
 
     def set_credentials(self, partner_id: object, client_id: object, client_secret: object) -> None:
         values = [str(value or "").strip() for value in (partner_id, client_id, client_secret)]
@@ -1371,7 +1540,7 @@ class SessionState:
         return {
             "configured": configured,
             "partnerHint": f"…{partner_id[-4:]}" if configured and len(partner_id) > 4 else ("••••" if configured else ""),
-            "dataMode": "live" if dashboard else "illustrative",
+            "dataMode": str((dashboard or {}).get("mode") or "illustrative"),
             "lastSyncAt": dashboard.get("lastSyncAt", "") if dashboard else "",
             "activeJob": active_job,
             "credentialsPersisted": False,
@@ -1379,13 +1548,36 @@ class SessionState:
         }
 
     def dashboard(self) -> dict[str, Any]:
+        operational_view = self.workspace.read_operational_view()
+        workspace_revision = operational_view["workspaceRevision"]
         with self._lock:
-            dashboard = copy.deepcopy(self._dashboard) if self._dashboard else {"mode": "illustrative"}
-        all_overlays = self.workspace.pending_overlays()
+            cached = copy.deepcopy(self._dashboard)
+        current_rows, activated_at, baseline_scopes, mode = self._dashboard_source(operational_view)
+        if current_rows:
+            device_scope = baseline_scopes.get("Devices", {})
+            device_filters = dict(device_scope.get("filters") or {}) if mode == "filtered" else {}
+            dashboard = build_dashboard_payload(
+                current_rows,
+                activated_at or str((cached or {}).get("lastSyncAt") or utc_now_iso()),
+                {
+                    "deviceModel": str(device_filters.get("model") or ""),
+                    "deviceStatus": str(device_filters.get("status2") or ""),
+                    "deviceHomeId": str(device_filters.get("homeId") or ""),
+                },
+                list(current_rows),
+                mode=mode,
+            )
+            dashboard["baselineScopes"] = baseline_scopes
+            with self._lock:
+                self._rows = copy.deepcopy(current_rows)
+                self._dashboard = copy.deepcopy(dashboard)
+        else:
+            dashboard = cached or {"mode": "illustrative"}
+        all_overlays = operational_view["pendingOverlays"]
         pending = [item for item in all_overlays if item["entityType"] == "User"]
         group_changes = [item for item in all_overlays if item["entityType"] == "GroupMembership"]
-        dashboard["workspaceRevision"] = self.workspace.revision()
-        dashboard["sharedSnapshots"] = self.workspace.snapshot_metadata()
+        dashboard["workspaceRevision"] = workspace_revision
+        dashboard["sharedSnapshots"] = operational_view["snapshotMetadata"]
         dashboard["pendingUsers"] = [
             {
                 "runId": item["runId"],
@@ -1410,8 +1602,27 @@ class SessionState:
             "superseded": sum(1 for item in pending if item["state"] == "Superseded"),
             "groupRelationshipChanges": sum(1 for item in group_changes if item["state"] not in {"Confirmed", "Superseded"}),
         }
-        confirmed_users = int((dashboard.get("summary") or {}).get("totalUsers") or 0)
-        dashboard["projectedSummary"] = {"confirmedUsers": confirmed_users, "baselinePlusPendingUsers": confirmed_users + sum(1 for item in pending if item["state"] in {"Proposed creation", "Submitted—awaiting confirmation"})}
+        confirmed_user_value = (dashboard.get("summary") or {}).get("totalUsers")
+        if confirmed_user_value is None:
+            dashboard["projectedSummary"] = {
+                "confirmedUsers": None,
+                "baselinePlusPendingUsers": None,
+            }
+        else:
+            confirmed_users = int(confirmed_user_value)
+            dashboard["projectedSummary"] = {
+                "confirmedUsers": confirmed_users,
+                "baselinePlusPendingUsers": confirmed_users + sum(
+                    1
+                    for item in pending
+                    if item["state"] in {"Proposed creation", "Submitted—awaiting confirmation"}
+                ),
+            }
+        with self._lock:
+            dashboard["availableDownloads"] = sorted(
+                key for key, path in self._downloads.items() if path and path.is_file()
+            )
+            dashboard["downloadScope"] = copy.deepcopy(self._download_scope)
         return dashboard
 
     def job(self, job_id: str) -> dict[str, Any] | None:
@@ -1511,10 +1722,27 @@ class SessionState:
                 raise UserInputError("Save the Axon tenant URL before starting a live pull.")
             config = copy.deepcopy(config)
             config["keep_raw_json"] = False
-            config["device_home_crosswalk_csv"] = str(crosswalk_path("device-homes"))
+            run_dir = self._temporary_dir / job_id
+            run_dir.mkdir(parents=True, exist_ok=True)
+            governance_dir = run_dir / "governance"
+            governance_dir.mkdir(parents=True, exist_ok=True)
+            governance_exports = {
+                "device_home_crosswalk_csv": ("device_home_crosswalk_starter", "device_home_crosswalk_starter.csv"),
+                "axon_group_crosswalk_csv": ("axon_group_crosswalk_starter", "axon_group_crosswalk_starter.csv"),
+                "non_site_group_register_csv": ("axon_non_site_group_register_starter", "axon_non_site_group_register_starter.csv"),
+            }
+            for config_field, (dataset_key, file_name) in governance_exports.items():
+                export_path = governance_dir / file_name
+                try:
+                    self.workspace.export_governance_csv(dataset_key, export_path)
+                    config[config_field] = str(export_path)
+                except KeyError:
+                    config[config_field] = str(governance_file_path(file_name))
+            # The status map remains an explicitly file-governed reference rather
+            # than an editable SQLite dataset. Always consume its current file so
+            # an administrator's reviewed status change is not shadowed by the
+            # one-time CSV migration copy.
             config["device_status_map_csv"] = str(governance_file_path("device_status_map.csv"))
-            config["axon_group_crosswalk_csv"] = str(crosswalk_path("axon-groups"))
-            config["non_site_group_register_csv"] = str(crosswalk_path("non-site-groups"))
             devices_config = config.get("resources", {}).get("Devices", {})
             params = dict(devices_config.get("sync_params") or {})
             for key in ["model", "status2", "homeId"]:
@@ -1545,9 +1773,7 @@ class SessionState:
                     context_rows[existing_resource] = existing_snapshot["rows"]
             resource_counts: dict[str, int] = {}
             downloads: dict[str, Path] = {}
-            run_dir = self._temporary_dir / job_id
-            run_dir.mkdir(parents=True, exist_ok=True)
-
+            pending_snapshots: list[dict[str, Any]] = []
             for name in resources:
                 detail = "API pacing is one request every five seconds" if name == "Devices" else "Read-only GET"
                 self._update_job(job_id, phase=f"Pulling {name} — {detail}")
@@ -1570,19 +1796,12 @@ class SessionState:
                 )
                 mapped = map_rows(name, records, resource_config["field_map"], config, context_rows)
                 context_rows[name] = mapped
-                activated = self.workspace.activate_snapshot(
-                    name,
-                    mapped,
-                    resource_scope,
-                    "Axon API via Geographic Operations",
-                )
-                self.workspace.release_refresh_lease(
-                    name,
-                    refresh_owner,
-                    leases.pop(name),
-                    "completed",
-                    snapshot_id=activated["snapshotId"],
-                )
+                pending_snapshots.append({
+                    "resource": name,
+                    "rows": mapped,
+                    "scope": resource_scope,
+                    "source": "Axon API via Geographic Operations",
+                })
                 resource_counts[name] = len(mapped)
                 output_path = run_dir / resource_config["output_csv"]
                 write_csv(mapped, resource_config["output_headers"], output_path)
@@ -1593,27 +1812,68 @@ class SessionState:
                     job_id,
                     completedResources=completed,
                     resourceCounts=dict(resource_counts),
-                    phase=f"Completed {name}: {len(mapped)} records across {pages} page(s)",
+                    phase=f"Validated {name}: {len(mapped)} records across {pages} page(s)",
                 )
 
-            write_assignment_and_status_reports(context_rows, run_dir)
-            for report in run_dir.glob("reports.*.csv"):
-                downloads[report.stem.casefold()] = report
-                if "user_device_assignment_summary" in report.stem:
-                    downloads["assignments"] = report
-                elif "device_status_summary" in report.stem:
-                    downloads["device-status"] = report
-                elif "device_assignment_and_status_exceptions" in report.stem:
-                    downloads["exceptions"] = report
+            # A missing Devices snapshot means device relationships are unknown,
+            # not zero. Suppress device-derived reports until a full or explicitly
+            # filtered Devices scope is present.
+            if "Devices" in context_rows:
+                write_assignment_and_status_reports(context_rows, run_dir)
+                for report in run_dir.glob("reports.*.csv"):
+                    downloads[report.stem.casefold()] = report
+                    if "user_device_assignment_summary" in report.stem:
+                        downloads["assignments"] = report
+                    elif "device_status_summary" in report.stem:
+                        downloads["device-status"] = report
+                    elif "device_assignment_and_status_exceptions" in report.stem:
+                        downloads["exceptions"] = report
+            if cancel_check():
+                raise PullCancelledError("Pull canceled by the local operator before snapshot activation.")
+            activated_snapshots = self.workspace.activate_snapshots_batch(pending_snapshots)
+            activated_by_resource = {item["resource"]: item for item in activated_snapshots}
+            for name, refresh_id in list(leases.items()):
+                activated = activated_by_resource[name]
+                self.workspace.release_refresh_lease(
+                    name,
+                    refresh_owner,
+                    refresh_id,
+                    "completed",
+                    snapshot_id=activated["snapshotId"],
+                )
+                leases.pop(name, None)
             last_sync_at = utc_now_iso()
-            dashboard = build_dashboard_payload(context_rows, last_sync_at, filters, resources)
+            baseline_rows, baseline_at, baseline_scopes, dashboard_mode = self._dashboard_source()
+            device_scope = baseline_scopes.get("Devices", {})
+            baseline_filters = dict(device_scope.get("filters") or {}) if dashboard_mode == "filtered" else {}
+            dashboard = build_dashboard_payload(
+                baseline_rows,
+                baseline_at or last_sync_at,
+                {
+                    "deviceModel": str(baseline_filters.get("model") or ""),
+                    "deviceStatus": str(baseline_filters.get("status2") or ""),
+                    "deviceHomeId": str(baseline_filters.get("homeId") or ""),
+                },
+                list(baseline_rows),
+                mode=dashboard_mode,
+            )
+            dashboard["baselineScopes"] = baseline_scopes
             summary_path = run_dir / "bwc_geographic_live_summary.json"
             summary_path.write_text(json.dumps(dashboard, indent=2), encoding="utf-8")
             downloads["summary"] = summary_path
             with self._lock:
-                self._rows = context_rows
+                self._rows = baseline_rows
                 self._dashboard = dashboard
                 self._downloads = downloads
+                self._download_scope = {
+                    "resources": list(resources),
+                    "filters": dict(filters),
+                    "deviceScope": (
+                        "filtered"
+                        if "Devices" in resources and any(filters.values())
+                        else "full" if "Devices" in resources else "unavailable"
+                    ),
+                }
             self._update_job(
                 job_id,
                 status="complete",
@@ -1796,8 +2056,11 @@ class LocalAxonGeographicHandler(BaseHTTPRequestHandler):
                     return
                 if len(segments) == 4 and segments[3] == "export":
                     with CROSSWALK_LOCK:
-                        _, file_path, _, _ = _read_crosswalk(key)
-                        self._send_attachment(file_path)
+                        _, file_path, _, _, _ = _read_crosswalk(key)
+                    export_dir = self.state._temporary_dir / "governance-exports" / uuid.uuid4().hex
+                    export_path = export_dir / file_path.name
+                    self.state.workspace.export_governance_csv(file_path.stem, export_path)
+                    self._send_attachment(export_path)
                     return
                 self._error(HTTPStatus.NOT_FOUND, "Local crosswalk route not found.")
             except UserInputError as exc:

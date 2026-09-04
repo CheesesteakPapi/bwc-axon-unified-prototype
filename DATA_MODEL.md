@@ -18,7 +18,11 @@ Each snapshot records a generated snapshot ID, resource, canonical scope JSON, s
 
 Devices activation also materializes normalized user-device relationship rows with device/user identifiers, assigned/unassigned state, device status, model, and Device Home. Inventory states such as in stock, lost, or relinquished remain source device-status values available for filtering rather than being conflated with assignment state.
 
-Full and filtered resource scopes are independent. Consumers prefer `full`; a filtered Devices pull is retained as useful scoped data without altering the full baseline label or metrics.
+Full and filtered resource scopes are independent. Confirmed dashboard consumers require an active `full` Devices snapshot. A filtered Devices pull is retained as useful scoped data without altering the full baseline; when no full baseline exists, it is displayed only as an explicitly non-confirmed filtered result.
+
+A Geographic multi-resource refresh stages every requested resource and activates the batch in one SQLite transaction with one workspace revision. Cancellation or failure before commit activates none of the batch and preserves every prior baseline.
+
+Confirmed geographic metrics use a crosswalk relationship only when its Site ID is nonblank and its governed Mapping Status is explicitly `Mapped`. Candidate and needs-review relationships remain outside confirmed mapping totals.
 
 ## Provisioning run
 
@@ -35,7 +39,7 @@ Any Preview edit creates a new revision, recalculates assignment dependencies, r
 
 ## Canonical user row
 
-Identity fields include Email, External ID, badge number, username, first name, and last name. Assignment and review fields include Role, optional friendly Group Name override, Component, directory/effective Location, Personnel AOR, original Job Title, governed Job Category, Supervisor Email, Supervisor UPN, Rank, Axon/current state, and validation/provenance metadata.
+Identity fields include Email, External ID, badge number, username, first name, and last name. Assignment and review fields include Role, optional friendly Group selection, Component, directory/effective Location, optional Personnel AOR, optional original Job Title, optional governed Job Category, Supervisor Email, Supervisor UPN, Rank, Axon/current state, and validation/provenance metadata. Missing optional AOR/category mappings are warnings and do not remove an otherwise eligible user record. A blank Group external ID means no Group relationship record is generated.
 
 Status is proposed as `Active`. Directory account status is separate. Rank is optional and has no assignment effect. Entra membership is absent by design.
 
@@ -43,7 +47,7 @@ Status is proposed as `Active`. Directory account status is separate. Rank is op
 
 Governed datasets cover directory attributes, approved Roles, personnel Location-to-AOR, exact title classification, Component/AOR/category Group rules, Axon Group hierarchy/master, facilities/office presence, Device Homes, device status, and geographic crosswalks.
 
-Each change records expected revision, prior value, actor/reviewer, UTC time, review notes, mapping method, confidence, and an audit event. Text beginning with spreadsheet formula characters is rejected before CSV projection.
+Each reviewed change records expected revision, prior value, actor/reviewer, UTC time, review notes, mapping method, confidence, and an audit event. Distinct Location/Component and Job Title values observed during directory enrichment may be appended automatically as `Needs review` candidates; candidate audit events contain counts rather than user identities. Text beginning with spreadsheet formula characters is rejected before CSV projection.
 
 ## Audit
 

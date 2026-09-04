@@ -1,6 +1,7 @@
 # Master Release Notes — BWC Axon Unified Prototype V3.1.0
 
 Release date: 2026-09-02
+Correction update: 2026-09-04
 Runtime: Windows 11, Python 3.11+, Windows PowerShell 5.1+
 Distribution: source ZIP; standard-user setup; no native executable or signature
 
@@ -20,7 +21,10 @@ V3.1.0 replaces the file-handoff prototype with a unified local operating model.
 - Kept Supervisor Email and Supervisor UPN separate; only Supervisor Email is generated for Axon.
 - Kept Rank separate, optional, blank by default, and excluded it from assignment logic.
 - Preserved directory account status separately and blocklisted disabled accounts for review.
-- Added one optional friendly Group Name override that must resolve to one current reviewed Axon Group.
+- Changed missing reviewed Location/AOR and exact-title/category mappings from blockers to warnings because those fields are optional for user import.
+- Added automatic, deduplicated `Needs review` crosswalk candidates for new directory Location/Component and Job Title values, with provider provenance and without storing user identities in crosswalk audit events.
+- Allowed non-inactive Component/AOR/category Group rules to supply recommendations without a separate reviewed status.
+- Added current-Group drop-downs for intake, Preview, and bulk editing. Operators may select an exact Group or intentionally leave Group assignment blank; blank or unresolved optional Groups omit the Group relationship row without blocking the user row.
 - Added assignment-only row editing and governed bulk editing with before/after review and a required reason.
 - Made identity fields read-only in Preview.
 - Replaced the ambiguous existing-account checkbox with field-level differences and **Approve N account updates and continue**.
@@ -35,11 +39,12 @@ V3.1.0 replaces the file-handoff prototype with a unified local operating model.
 - Added the authoritative `%LOCALAPPDATA%\ICE\BWC Axon Operations\shared\shared_workspace.sqlite3` store.
 - Added independent full and filtered snapshot scopes for Users, Groups, Devices, and Device Homes.
 - Added shared resource refresh leases to prevent duplicate pulls across processes.
-- Added staging, validation, and atomic activation; failed/canceled refreshes preserve the prior baseline.
-- Prevented a filtered Devices pull from replacing or being labeled as the full baseline.
+- Added staging, validation, and atomic multi-resource activation in one SQLite transaction and one workspace revision; failed/canceled refreshes activate none of the pending batch and preserve every prior baseline.
+- Prevented a filtered Devices pull from replacing or being labeled as the full baseline. A first filtered-only pull is presented as a clearly scoped, non-confirmed result rather than a false zero-device baseline.
 - Added workspace and run revision counters with `409 Conflict` protection.
 - Added persistent pending overlays with Confirmed, Proposed creation/update, Submitted—awaiting confirmation, Failed, and Superseded states.
 - Added Geographic Operations baseline-versus-projected metrics and pending filters.
+- Required an explicit governed `Mapped` status before a Site ID contributes to confirmed mapping totals, and preserved reviewed AOR labels in geographic summaries.
 - Added cross-application polling of the lightweight workspace revision.
 - Added hash-chained audit events without credential or raw-row storage.
 - Added one-time governed CSV migration with original path and SHA-256 provenance; SQLite is authoritative after migration.

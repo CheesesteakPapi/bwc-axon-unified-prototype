@@ -1,6 +1,6 @@
 # Crosswalk and Governance Table Guide
 
-Seven local CSVs are editable in the app. `device_status_map.csv` remains file-only until exact tenant `status2` values are observed. These files support reviewed relationships among Office Locations, physical Facilities, Device Homes, Axon Groups, command hierarchy, users, and reporting states.
+Twelve governed tables are editable in the app through the authoritative shared SQLite workspace. They include the provisioning Role, directory, personnel-AOR, job-category, and optional Group-rule tables as well as the geographic and Group-governance tables. The corresponding CSVs are review/export projections with attempted timestamped backups; a projection failure is reported without undoing the SQLite commit. `device_status_map.csv` remains file-only until exact tenant `status2` values are observed. These tables support reviewed relationships among Office Locations, physical Facilities, Device Homes, Axon Groups, command hierarchy, users, and reporting states.
 
 ## Core rules
 
@@ -130,7 +130,7 @@ The current live Users pull does not expose the tiered membership fields used by
 
 ## Device status map
 
-Add only exact observed `status2` values to `device_status_map.csv` through the governed file-review process. Map each raw value separately to Assigned, Unassigned, In Stock, Lost, Relinquished, Other, or Unmapped. Do not derive a raw state from owner presence or assignment.
+Add only exact observed `status2` values to `device_status_map.csv` through the governed file-review process. Runtime matching ignores letter case while preserving the reviewed display value. Map each raw value separately to Assigned, Unassigned, In Stock, Lost, Relinquished, Other, or Unmapped. Do not derive a raw state from owner presence or assignment.
 
 ## Review sequence
 

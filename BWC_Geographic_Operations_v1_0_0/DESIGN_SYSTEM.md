@@ -145,9 +145,9 @@ Use red for critical/error, amber for warning/illustrative, green for success/li
 - Show the unsaved-row count in text so dirty-row styling is supplementary. Keep per-row **Save** and **Reset** actions keyboard reachable.
 - While a row has a draft, block workspace search, reload, pagination, tab switching, and the workspace **Back** action; warn before browser close or reload. Operators should save or reset before using other navigation.
 - Announce loading, errors, save confirmation, backup creation, and conflicts through readable status or alert text. A conflict must tell the operator to reset the draft and reload rather than silently overwriting a newer value.
-- Keep the local-file notice visible: crosswalk saves change only an allowlisted packaged CSV, create a timestamped backup, and do not write to Axon.
+- Keep the shared-workspace notice visible: governed saves commit only an allowlisted SQLite dataset, then attempt the CSV review/export projection and timestamped backup, and never write to Axon. If projection refresh fails, retain the committed SQLite change and show a clear warning.
 - Allow row creation only in the Non-site Group register, Facility Master, Tiered Group Master, and Site-to-Group relationship table. Office Location, Device Home, and legacy office-based Group rows are preserved and cannot be created in the UI.
-- Search applies to the whole selected server-side CSV, pagination shows 25 rows at a time, and **Export full CSV** downloads the entire current local file rather than the visible page.
+- Search applies to the whole selected shared-workspace table, pagination shows 25 rows at a time, and **Export full CSV** generates the entire current CSV projection from authoritative SQLite rather than exporting the visible page or an older disk projection.
 - Preserve the default 44 by 44 CSS-pixel interaction target for tab, pagination, export, Save, Reset, and new-row controls; retain visible focus and text labels at narrow layouts.
 
 ### Facilities workspace

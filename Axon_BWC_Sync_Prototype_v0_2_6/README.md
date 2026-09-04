@@ -86,14 +86,14 @@ Schema summaries are written to `data/schemas/`. Raw JSON is not saved unless `k
 
 Inside this sanitized source repository, `config.example.json` points to package-level synthetic `governance_starters/`. Relative paths are resolved from the configuration file's folder, so validation and synchronization do not depend on the shell's starting directory. Copy reviewed values into the per-user runtime workspace; never commit operational data.
 
-Populate these working files after the first authorized sync and review:
+The combined applications generate temporary sync-only CSVs from current SQLite governance at request time. For standalone CLI use, populate these synthetic compatibility files only after authorized review:
 
 - `device_home_crosswalk_starter.csv`
 - `axon_group_crosswalk_starter.csv`
 - `axon_non_site_group_register_starter.csv`
 - `device_status_map.csv`
 
-The adjacent UI is the primary editor for the working files. The CSV copies retained in this component folder are compatibility fallbacks only and are not used by the packaged configuration.
+Geographic Operations is the primary editor for operational mappings. The files referenced by `config.example.json` are synthetic standalone-CLI fallbacks, not the authoritative operational source. The file-governed `device_status_map.csv` remains an intentional exception and is read directly at runtime.
 
 Use stable Axon Group IDs for command-hierarchy/site joins; do not use Users as a site-mapping source. For Device Homes, use the reviewed normalized-name key until Axon confirms that the current Device Homes list exposes an immutable identifier. Names are therefore an exception path that requires duplicate/rename review.
 

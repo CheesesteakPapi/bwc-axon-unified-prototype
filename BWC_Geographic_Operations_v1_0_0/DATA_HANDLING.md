@@ -23,10 +23,10 @@
 ## Persistent local governance data
 
 - The repository contains only synthetic Device Home, Group, Facility, Office Presence, relationship, and status starter CSVs. Reviewed working values are created in the per-user runtime workspace and must remain outside version control.
-- Each successful in-app update/create first copies the previous file to `governance_data/backups/crosswalks/`, then atomically replaces it.
+- Each successful in-app update/create commits the authoritative shared SQLite revision first, then attempts to copy and refresh the CSV review/export projection. A projection or backup failure is reported as a warning and does not falsely roll back the committed SQLite change.
 - Local writes use allowlisted fields, controlled values, expected-value conflict checks, reference validation, and spreadsheet-formula-prefix rejection.
 - The backups are on the same local disk and have no built-in retention or restore workflow.
-- Local CSV requests always report `axonWrite: false` and never call Axon.
+- Governed-table requests and CSV projection exports always report `axonWrite: false` and never call Axon. Exports are generated from authoritative SQLite at request time; the file-governed device-status map is read directly from its current reviewed file.
 
 ## Local exposure controls
 

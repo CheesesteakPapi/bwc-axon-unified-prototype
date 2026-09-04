@@ -96,6 +96,43 @@ class BackendServerTests(unittest.TestCase):
         with self.assertRaisesRegex(UserInputError, "session credentials"):
             self.state.start_shared_refresh("Users")
 
+    def test_sync_config_materializes_current_shared_governance_rows(self):
+        self.state.workspace.migrate_governance_csvs(backend_server.SUITE_ROOT / "governance_starters")
+        dataset = self.state.workspace.governance_dataset("device_home_crosswalk_starter")
+        rows = [dict(row) for row in dataset["rows"]]
+        rows[0]["Review Notes"] = "SQLite authority marker for provisioning sync."
+        self.state.workspace.replace_governance_rows(
+            "device_home_crosswalk_starter",
+            rows,
+            dataset["revision"],
+            "test-sync-config",
+            "test",
+        )
+        config, _ = backend_server.load_config()
+        status_path = backend_server.governance_root() / "device_status_map.csv"
+        status_path.parent.mkdir(parents=True, exist_ok=True)
+        status_path.write_text(
+            "Raw Axon Device Status,Reporting State,Validated By,Validated Date,Notes\n"
+            "Assigned,Reviewed Operational,Test,2026-09-04,Current file-governed value.\n",
+            encoding="utf-8",
+        )
+
+        config_path = backend_server.materialize_sync_config(self.state, config, "test-authority")
+
+        materialized = json.loads(config_path.read_text(encoding="utf-8"))
+        projection_path = Path(materialized["device_home_crosswalk_csv"])
+        with projection_path.open("r", encoding="utf-8-sig", newline="") as handle:
+            projected_rows = list(csv.DictReader(handle))
+        self.assertEqual(
+            projected_rows[0]["Review Notes"],
+            "SQLite authority marker for provisioning sync.",
+        )
+        self.assertTrue(projection_path.is_relative_to(self.state.root))
+        materialized_status_path = Path(materialized["device_status_map_csv"])
+        self.assertEqual(materialized_status_path, status_path)
+        self.assertIn("Reviewed Operational", materialized_status_path.read_text(encoding="utf-8"))
+        self.assertFalse(materialized_status_path.is_relative_to(self.state.root))
+
     def test_auto_port_uses_next_loopback_port_when_requested_port_is_busy(self):
         blocker = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         blocker.bind(("127.0.0.1", 0))
@@ -137,6 +174,12 @@ class BackendServerTests(unittest.TestCase):
             payload = json.loads(response.read().decode("utf-8"))
             self.assertEqual(response.status, 200)
             self.assertTrue(payload["productionMode"])
+
+            connection.request("GET", "/api/catalogs/groups", headers={"Cookie": cookie.split(";", 1)[0]})
+            response = connection.getresponse()
+            payload = json.loads(response.read().decode("utf-8"))
+            self.assertEqual(response.status, 200)
+            self.assertIsInstance(payload["groups"], list)
         finally:
             connection.close()
             server.shutdown()

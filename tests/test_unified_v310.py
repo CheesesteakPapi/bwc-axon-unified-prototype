@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import csv
+import importlib.util
 import os
 import sys
 import tempfile
@@ -17,9 +19,11 @@ sys.path.insert(0, str(ROOT))
 
 from provisioning_workflow import (  # noqa: E402
     EntraDelegatedProvider,
+    RowDirectoryProvider,
     SyntheticDirectoryProvider,
     canonicalize_input,
     detect_columns,
+    edit_rows,
     enrich_rows,
     generate_records,
     parse_xlsx_bytes,
@@ -59,7 +63,8 @@ class UnifiedPrototypeTests(unittest.TestCase):
         self.assertEqual(rows[0]["supervisorEmail"], "")
         self.assertEqual(rows[0]["supervisorUpn"], "")
         self.assertEqual(generation["userRecords"][0]["EVIDENCE_GROUP_EXT_ID"], "")
-        self.assertEqual(generation["groupRecords"][0]["ENTITY_ID"], "alex.user@example.test")
+        self.assertEqual(rows[0]["recommendedGroupName"], "TEST Prototype Users")
+        self.assertEqual(generation["groupRecords"], [])
 
     def test_entra_delegated_read_resolves_exact_mail_and_maps_distinct_upn(self) -> None:
         intake_email = "person.email@example.test"
@@ -122,6 +127,130 @@ class UnifiedPrototypeTests(unittest.TestCase):
         self.assertEqual(generation["userRecords"][0]["EXTERNAL_ID"], upn)
         self.assertEqual(generation["userRecords"][0]["STATUS"], "Active")
 
+    def test_optional_mapping_gaps_queue_crosswalk_candidates_without_blocking_user_import(self) -> None:
+        directory = RowDirectoryProvider(
+            [{
+                "mail": "optional.user@example.test",
+                "userPrincipalName": "optional.user@tenant.example.test",
+                "mailNickname": "optional.user",
+                "givenName": "Optional",
+                "surname": "User",
+                "accountEnabled": True,
+                "officeLocation": "Observed Field Office",
+                "department": "HSI",
+                "jobTitle": "Observed Special Agent Title",
+            }]
+        )
+        intake = [{"email": "optional.user@example.test", "role": "Prototype User", "groupName": ""}]
+
+        rows, validation, generation = enrich_rows(self.workspace, intake, directory)
+
+        self.assertTrue(validation["valid"])
+        self.assertEqual(validation["blockerCount"], 0)
+        self.assertGreaterEqual(validation["warningCount"], 3)
+        self.assertEqual(validation["crosswalkCandidatesAdded"], {"locationAor": 1, "jobCategory": 1})
+        self.assertEqual(rows[0]["personnelAor"], "")
+        self.assertEqual(rows[0]["jobCategory"], "")
+        self.assertEqual(generation["userRecords"][0]["LOCATION"], "Observed Field Office")
+        self.assertEqual(generation["groupRecords"], [])
+
+        location_rows = self.workspace.governance_dataset("personnel_location_aor_crosswalk")["rows"]
+        observed_location = next(row for row in location_rows if row["Directory Location"] == "Observed Field Office")
+        self.assertEqual(observed_location["Personnel AOR"], "")
+        self.assertEqual(observed_location["Review Status"], "Needs review")
+        self.assertEqual(observed_location["Mapping Method"], "Observed from directory export")
+        title_rows = self.workspace.governance_dataset("job_title_category_mapping")["rows"]
+        observed_title = next(row for row in title_rows if row["Exact Job Title"] == "Observed Special Agent Title")
+        self.assertEqual(observed_title["Job Category"], "")
+        self.assertEqual(observed_title["Review Status"], "Needs review")
+
+        _, second_validation, _ = enrich_rows(self.workspace, intake, directory)
+        self.assertEqual(second_validation["crosswalkCandidatesAdded"], {"locationAor": 0, "jobCategory": 0})
+        self.assertEqual(sum(row["Directory Location"] == "Observed Field Office" for row in self.workspace.governance_dataset("personnel_location_aor_crosswalk")["rows"]), 1)
+        self.assertTrue(self.workspace.verify_audit_chain()["valid"])
+
+    def test_group_rule_need_not_be_reviewed_and_group_can_be_cleared(self) -> None:
+        self.workspace.activate_snapshot(
+            "Groups",
+            [
+                {
+                    "id": "GROUP-TEST-001",
+                    "name": "TEST Prototype Users",
+                    "External Group ID": "GROUP-TEST-001",
+                    "Group Name": "TEST Prototype Users",
+                    "Component": "TEST",
+                    "Organizational Area": "TEST AOR",
+                    "Group Tier": "Primary",
+                },
+                {
+                    "id": "GROUP-TEST-002",
+                    "name": "TEST Prototype Users",
+                    "External Group ID": "GROUP-TEST-002",
+                    "Group Name": "TEST Prototype Users",
+                    "Component": "TEST",
+                    "Organizational Area": "TEST AOR",
+                    "Group Tier": "Secondary",
+                },
+            ],
+            {"type": "full", "filters": {}},
+        )
+        dataset = self.workspace.governance_dataset("component_aor_group_rules")
+        rules = [dict(row) for row in dataset["rows"]]
+        rules[0]["Review Status"] = "Needs review"
+        self.workspace.replace_governance_rows(
+            "component_aor_group_rules",
+            rules,
+            dataset["revision"],
+            "test-group-rule-status",
+            "test",
+        )
+        rows, validation, generation = enrich_rows(
+            self.workspace,
+            [{"email": "group.user@example.test", "role": "Prototype User", "groupName": ""}],
+            SyntheticDirectoryProvider(),
+        )
+        self.assertTrue(validation["valid"])
+        self.assertEqual(rows[0]["recommendedGroupName"], "TEST Prototype Users")
+        self.assertEqual(rows[0]["groupName"], "")
+        self.assertEqual(generation["groupRecords"], [])
+
+        selected_rows, selected_validation, selected_generation = edit_rows(
+            self.workspace,
+            rows,
+            [{"rowId": rows[0]["rowId"], "changes": {"groupName": "TEST Prototype Users", "groupExternalId": "GROUP-TEST-001"}}],
+            "Selected the recommended organizational Group.",
+        )
+        self.assertTrue(selected_validation["valid"])
+        self.assertEqual(selected_rows[0]["groupExternalId"], "GROUP-TEST-001")
+        self.assertEqual(len(selected_generation["groupRecords"]), 1)
+
+        selected_rows[0]["blockers"] = [
+            "Personnel Location does not have one reviewed Location-to-AOR mapping.",
+            "Exact job title does not have a reviewed job-category mapping.",
+            "No reviewed Component/AOR/job-category Group rule was found.",
+        ]
+        retained_rows, retained_validation, retained_generation = edit_rows(
+            self.workspace,
+            selected_rows,
+            [{"rowId": rows[0]["rowId"], "changes": {"supervisorEmail": "supervisor@example.test"}}],
+            "Added a reviewed supervisor email without changing the Group selection.",
+        )
+        self.assertTrue(retained_validation["valid"])
+        self.assertEqual(retained_rows[0]["groupExternalId"], "GROUP-TEST-001")
+        self.assertEqual(len(retained_generation["groupRecords"]), 1)
+        self.assertFalse(retained_rows[0]["blockers"])
+
+        updated_rows, updated_validation, updated_generation = edit_rows(
+            self.workspace,
+            retained_rows,
+            [{"rowId": rows[0]["rowId"], "changes": {"groupName": "", "groupExternalId": ""}}],
+            "No organizational Group assignment is required for this user.",
+        )
+        self.assertTrue(updated_validation["valid"])
+        self.assertEqual(updated_rows[0]["groupExternalId"], "")
+        self.assertEqual(updated_generation["userRecords"][0]["EMAIL"], "group.user@example.test")
+        self.assertEqual(updated_generation["groupRecords"], [])
+
     def test_chunk_boundaries(self) -> None:
         for total, expected in ((500, 1), (501, 2), (1000, 2), (1500, 3)):
             rows = []
@@ -148,6 +277,92 @@ class UnifiedPrototypeTests(unittest.TestCase):
         relationships = self.workspace.active_user_device_relationships()
         self.assertEqual(relationships[0]["user_id"], "user-1")
         self.assertEqual(relationships[0]["assignment_state"], "Assigned")
+
+    def test_all_sync_components_require_explicit_mapped_status_for_site_projection(self) -> None:
+        module_paths = [
+            ROOT / "Axon_BWC_Provisioning_Center_v1_0_0" / "axon_sync.py",
+            ROOT / "BWC_Geographic_Operations_v1_0_0" / "axon_sync.py",
+            ROOT / "Axon_BWC_Sync_Prototype_v0_2_6" / "axon_sync.py",
+        ]
+
+        for index, module_path in enumerate(module_paths):
+            with self.subTest(component=module_path.parent.name), tempfile.TemporaryDirectory() as directory:
+                spec = importlib.util.spec_from_file_location(f"test_sync_contract_{index}", module_path)
+                self.assertIsNotNone(spec)
+                self.assertIsNotNone(spec.loader)
+                module = importlib.util.module_from_spec(spec)
+                spec.loader.exec_module(module)
+
+                root = Path(directory)
+                home_path = root / "device_homes.csv"
+                group_path = root / "groups.csv"
+
+                def write_mapping(path: Path, key_field: str, key_value: str, status: str) -> None:
+                    headers = [key_field, "Site ID", "Component", "Region / AOR", "Mapping Status"]
+                    with path.open("w", encoding="utf-8-sig", newline="") as handle:
+                        writer = csv.DictWriter(handle, fieldnames=headers, lineterminator="\r\n")
+                        writer.writeheader()
+                        writer.writerow({
+                            key_field: key_value,
+                            "Site ID": "TEST-SITE-001",
+                            "Component": "TEST",
+                            "Region / AOR": "Test AOR",
+                            "Mapping Status": status,
+                        })
+
+                cfg = {
+                    "device_home_crosswalk_csv": str(home_path),
+                    "axon_group_crosswalk_csv": str(group_path),
+                    "device_status_map_csv": "",
+                    "non_site_group_register_csv": "",
+                }
+                home_record = {"attributes": {"name": "Candidate Home"}}
+                home_fields = {"Device Home Name (API)": "attributes.name"}
+                group_record = {"id": "group-1", "attributes": {"name": "Candidate Group"}}
+                group_fields = {"Axon Group ID": "id", "Group Name": "attributes.name"}
+                device_record = {
+                    "id": "device-1",
+                    "attributes": {"status2": "ASSIGNED"},
+                    "relationships": {"deviceHome": {"data": {"attributes": {"name": "Candidate Home"}}}},
+                }
+                device_fields = {
+                    "Axon Device ID": "id",
+                    "Device Home Name (API)": "relationships.deviceHome.data.attributes.name",
+                    "Device Status": "attributes.status2",
+                }
+
+                write_mapping(home_path, "Normalized Device Home Key", "candidate home", "Candidate")
+                write_mapping(group_path, "Axon Group ID", "group-1", "Candidate")
+                candidate_homes = module.map_rows("DeviceHomes", [home_record], home_fields, cfg, {})
+                candidate_groups = module.map_rows("Groups", [group_record], group_fields, cfg, {})
+                candidate_devices = module.map_rows(
+                    "Devices",
+                    [device_record],
+                    device_fields,
+                    cfg,
+                    {"DeviceHomes": candidate_homes},
+                )
+                self.assertEqual(candidate_homes[0]["Mapping Status"], "Candidate")
+                self.assertEqual(candidate_homes[0]["Mapped Site ID"], "")
+                self.assertEqual(candidate_groups[0]["Mapped Site ID"], "")
+                self.assertEqual(candidate_devices[0]["Mapped Site ID"], "")
+                self.assertEqual(module.reviewed_site_mapping({"Site ID": "", "Mapping Status": "Mapped"}), {})
+
+                write_mapping(home_path, "Normalized Device Home Key", "candidate home", "Mapped")
+                write_mapping(group_path, "Axon Group ID", "group-1", "Mapped")
+                mapped_homes = module.map_rows("DeviceHomes", [home_record], home_fields, cfg, {})
+                mapped_groups = module.map_rows("Groups", [group_record], group_fields, cfg, {})
+                mapped_devices = module.map_rows(
+                    "Devices",
+                    [device_record],
+                    device_fields,
+                    cfg,
+                    {"DeviceHomes": mapped_homes},
+                )
+                self.assertEqual(mapped_homes[0]["Mapped Site ID"], "TEST-SITE-001")
+                self.assertEqual(mapped_homes[0]["Mapped Region / AOR"], "Test AOR")
+                self.assertEqual(mapped_groups[0]["Mapped Site ID"], "TEST-SITE-001")
+                self.assertEqual(mapped_devices[0]["Mapped Site ID"], "TEST-SITE-001")
 
     def test_refresh_lease_and_revision_conflicts(self) -> None:
         refresh_id = self.workspace.acquire_refresh_lease("Users", "app-one", {"type": "full"})
@@ -176,7 +391,7 @@ class UnifiedPrototypeTests(unittest.TestCase):
         self.assertFalse("Prototype User".encode("utf-8").startswith(b"\xef\xbb\xbf"))
 
     def test_user_and_group_overlays_are_separate_and_users_require_snapshot_confirmation(self) -> None:
-        intake = canonicalize_input([{"Email": "case.user@example.test", "Role": "Prototype User", "Group Name": ""}])
+        intake = canonicalize_input([{"Email": "case.user@example.test", "Role": "Prototype User", "Group Name": "TEST Prototype Users"}])
         rows, validation, generation = enrich_rows(self.workspace, intake, SyntheticDirectoryProvider())
         self.assertEqual(generation["groupHeaders"], ["EXTERNAL_ID", "MEMBERSHIP_TYPE", "ENTITY_TYPE", "ENTITY_ID"])
         run = self.workspace.create_run("Overlay", "synthetic-test", rows, validation, generation, "Ready for Preview")
