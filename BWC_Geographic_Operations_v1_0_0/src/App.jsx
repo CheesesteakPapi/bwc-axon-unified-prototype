@@ -32,6 +32,8 @@ import {
 import { localApi } from "./api.js";
 import { TaskHome, TaskNavigation } from "../../ui/TaskHome.jsx";
 import "../../ui/theme.css";
+import { loadWorkspace, devicePullNeedsScope } from "./workspaceUi.js";
+import { ReviewMappingEditor } from "./ReviewMappingEditor.jsx";
 import { LocationGuide } from "./LocationGuide.jsx";
 import { InventoryWorkspace } from "./InventoryWorkspace.jsx";
 import { emptyInventoryFilters } from "./inventoryView.js";
@@ -269,8 +271,9 @@ function ConnectionModal({ open, backendAvailable, config, session, syncJob, onC
   const [partnerId, setPartnerId] = useState("");
   const [clientId, setClientId] = useState("");
   const [clientSecret, setClientSecret] = useState("");
-  const [resources, setResources] = useState(["DeviceHomes", "Groups", "Users", "Devices"]);
-  const [deviceModel, setDeviceModel] = useState("");
+  const [resources, setResources] = useState(["DeviceHomes"]);
+  const [allowFullDevices, setAllowFullDevices] = useState(false);
+  const [deviceModel, setDeviceModel] = useState(config.deviceModel || "");
   const [deviceStatus, setDeviceStatus] = useState("");
   const [deviceHomeId, setDeviceHomeId] = useState("");
   const [busy, setBusy] = useState(false);
@@ -278,6 +281,7 @@ function ConnectionModal({ open, backendAvailable, config, session, syncJob, onC
 
   useEffect(() => { onCloseRef.current = onClose; }, [onClose]);
   useEffect(() => { setAgencyBaseUrl(config.agencyBaseUrl || ""); setTimeoutSeconds(config.timeoutSeconds || 90); }, [config]);
+  useEffect(() => { setDeviceModel(config.deviceModel || ""); }, [config.deviceModel]);
   useEffect(() => {
     if (!open) return undefined;
     const previousFocus = document.activeElement;
@@ -310,9 +314,12 @@ function ConnectionModal({ open, backendAvailable, config, session, syncJob, onC
   }
 
   async function save(pullAfter) {
+    if (pullAfter && (!resources.length || devicePullNeedsScope(resources, {deviceModel,deviceStatus,deviceHomeId}, allowFullDevices))) {
+      setError("Choose a resource. For Devices, enter a filter or explicitly select the full inventory option."); return;
+    }
     setBusy(true); setError("");
     try {
-      await onSave({ agencyBaseUrl, timeoutSeconds }, { partnerId, clientId, clientSecret });
+      await onSave({ agencyBaseUrl, timeoutSeconds, deviceModel }, { partnerId, clientId, clientSecret });
       if (pullAfter) await onPull({ resources, deviceModel, deviceStatus, deviceHomeId });
       setPartnerId(""); setClientId(""); setClientSecret("");
     } catch (caught) {
@@ -336,9 +343,11 @@ function ConnectionModal({ open, backendAvailable, config, session, syncJob, onC
       </div>
       <div className="connection-section"><h3>2. Read-only pull</h3>
         <fieldset><legend>Resources</legend>{["DeviceHomes", "Groups", "Users", "Devices"].map((name) => <label className="check-row" key={name}><input type="checkbox" checked={resources.includes(name)} onChange={() => toggleResource(name)} /> {name}</label>)}</fieldset>
-        <label><span>Device model</span><input value={deviceModel} onChange={(event) => setDeviceModel(event.target.value)} placeholder="One model or comma-separated exact model strings" /></label>
+        <label><span>Tracked device models</span><input value={deviceModel} onChange={(event) => setDeviceModel(event.target.value)} placeholder="One model or comma-separated exact model strings" /><small>Saved on this workstation. Sent as Axon's model filter before downloading; other models are not requested. Use exact API model values.</small></label>
         <label><span>Exact device status2</span><input value={deviceStatus} onChange={(event) => setDeviceStatus(event.target.value)} placeholder="Optional exact Axon value" /></label>
         <label><span>Exact Device Home ID</span><input value={deviceHomeId} onChange={(event) => setDeviceHomeId(event.target.value)} placeholder="Optional exact Axon homeId" /></label>
+        {resources.includes("Devices") && <label className="check-row"><input type="checkbox" checked={allowFullDevices} onChange={e => setAllowFullDevices(e.target.checked)} /> I need an unfiltered full device inventory (may take many minutes)</label>}
+        <p>Only selected resources are pulled. Existing saved snapshots remain available while this background task runs.</p>
         <div className="pacing-note"><InfoCircledIcon /><span>The Device API is automatically paced to one request every five seconds. Model filtering is sent to Axon before pagination and can materially reduce pull time.</span></div>
         {syncJob && <div className={`sync-progress ${syncJob.status}`} role="status"><ReloadIcon className={running ? "spinning" : ""} /><div><strong>{syncJob.phase}</strong><span>{syncJob.completedResources?.length || 0} of {syncJob.resources?.length || resources.length} resources complete{syncJob.currentResource ? ` · ${syncJob.currentResource} page ${syncJob.currentPage || 1} · ${number(syncJob.receivedRecords || 0)} records` : ""}</span>{syncJob.error && <span className="error-text">{syncJob.error}</span>}</div></div>}
       </div>
@@ -462,11 +471,15 @@ const newRowDefaultsByTable = {
   "site-group-relationships": { "Mapping Status": "Pending review", "Mapping Method": "Not assessed", Confidence: "Not rated" },
 };
 
-function CrosswalkReviewQueue({ rows, isLive, defaultReviewState, onOpenTable }) {
+function CrosswalkReviewQueue({ rows, isLive, defaultReviewState, onOpenTable, backendAvailable, showToast, onDirtyChange }) {
   const [status, setStatus] = useState(defaultReviewState === "Mapped" ? "Reviewed" : defaultReviewState === "All states" ? "All records" : "Exceptions");
   const [search, setSearch] = useState("");
-  const [selectedKey, setSelectedKey] = useState(rows[0]?.normalizedKey || rows[0]?.sourceId || "");
-  useEffect(() => { setSelectedKey(rows[0]?.normalizedKey || rows[0]?.sourceId || ""); }, [rows]);
+  const [reviewDirty, setReviewDirty] = useState(false);
+  const [lockedSource, setLockedSource] = useState(null);
+  const rowKey = (row) => `${row?.sourceType}:${row?.normalizedKey || row?.sourceId}`;
+  useEffect(() => { onDirtyChange(reviewDirty); return () => onDirtyChange(false); }, [reviewDirty,onDirtyChange]);
+  const [selectedKey, setSelectedKey] = useState(rowKey(rows[0]));
+
   useEffect(() => { setStatus(defaultReviewState === "Mapped" ? "Reviewed" : defaultReviewState === "All states" ? "All records" : "Exceptions"); }, [defaultReviewState]);
   const visibleRows = useMemo(() => rows.filter((row) => {
     const searchMatch = !search || Object.values(row).join(" ").toLowerCase().includes(search.toLowerCase());
@@ -474,25 +487,26 @@ function CrosswalkReviewQueue({ rows, isLive, defaultReviewState, onOpenTable })
     const statusMatch = status === "All records" || (status === "Reviewed" ? reviewed : !reviewed);
     return searchMatch && statusMatch;
   }), [rows, search, status]);
-  const selected = visibleRows.find((row) => (row.normalizedKey || row.sourceId) === selectedKey) || visibleRows[0];
+  const selected = reviewDirty && lockedSource ? lockedSource : visibleRows.find((row) => rowKey(row) === selectedKey) || visibleRows[0];
   useEffect(() => {
-    if (selected) setSelectedKey(selected.normalizedKey || selected.sourceId);
-  }, [selected?.normalizedKey, selected?.sourceId]);
+    if (selected) { setSelectedKey(rowKey(selected)); if (!reviewDirty) setLockedSource(selected); }
+  }, [selected, reviewDirty]);
   function chooseRow(key, event) {
     if (event && !["Enter", " "].includes(event.key)) return;
     if (event) event.preventDefault();
+    if (reviewDirty) { showToast("Save or reset this review before selecting another record."); return; }
     setSelectedKey(key);
   }
   return <>
-    <div className="page-toolbar"><label><span>Mapping status</span><select value={status} onChange={(event) => setStatus(event.target.value)}><option>Exceptions</option><option>All records</option><option>Reviewed</option></select></label><label className="search-control"><MagnifyingGlassIcon /><input aria-label="Search crosswalk records" placeholder="Search home, group, site, city, or ID" value={search} onChange={(event) => setSearch(event.target.value)} /></label><span className="toolbar-chip">{isLive ? "Axon snapshot" : "Southeast AOR"}</span><span className="toolbar-chip critical">{visibleRows.length} review records</span></div>
-    <div className="review-layout"><div className="table-shell"><table role="grid"><caption className="sr-only">Crosswalk records. Select a row to review its mapping basis.</caption><thead><tr><th>Source type</th><th>Observed source</th><th>Suggested organizational unit</th><th>Mapping method</th><th>Confidence</th></tr></thead><tbody>{visibleRows.map((row) => { const key = row.normalizedKey || row.sourceId; return <tr key={`${row.sourceType}-${key}`} className={selectedKey === key ? "selected keyboard-selectable" : "keyboard-selectable"} tabIndex="0" aria-selected={selectedKey === key} onClick={() => chooseRow(key)} onKeyDown={(event) => chooseRow(key, event)}><td>{row.sourceType}</td><td>{row.sourceId}</td><td>{row.suggestedUnit}</td><td>{row.mappingMethod}</td><td><span className={`confidence ${String(row.confidence).toLowerCase().replace(" ", "-")}`}>{row.confidence}</span></td></tr>; })}{!visibleRows.length && <tr><td colSpan="5">No crosswalk records match the current filters.</td></tr>}</tbody></table></div>
-      <aside className="record-detail">{selected ? <><div className="record-title"><DrawingPinIcon /><div><span>Selected {selected.sourceType}</span><h3>{selected.sourceId}</h3></div></div><dl><div><dt>Observed source</dt><dd>{selected.sourceId}</dd></div><div><dt>Normalized key / ID</dt><dd>{selected.normalizedKey || "—"}</dd></div><div><dt>Suggested organizational unit</dt><dd>{selected.suggestedUnit}</dd></div><div><dt>Mapping method</dt><dd>{selected.mappingMethod}</dd></div><div><dt>Review basis</dt><dd>{selected.reviewNotes}</dd></div></dl><div className="review-queue-note"><InfoCircledIcon /><span>This is a triage snapshot. Record and save the governed decision in the editable shared-workspace table.</span></div><div className="detail-actions"><button type="button" className="primary-button" onClick={() => onOpenTable(selected.sourceType === "Device Home" ? "device-homes" : "axon-groups")}><TableIcon /> Open editable table</button>{selected.sourceType === "Axon Group" && selected.suggestedUnit === "Non-site group" && <button type="button" className="secondary-button" onClick={() => onOpenTable("non-site-groups")}>Open non-site register</button>}</div></> : <p>No review records match the current filters.</p>}</aside>
+    <div className="page-toolbar"><label><span>Mapping status</span><select disabled={reviewDirty} value={status} onChange={(event) => setStatus(event.target.value)}><option>Exceptions</option><option>All records</option><option>Reviewed</option></select></label><label className="search-control"><MagnifyingGlassIcon /><input disabled={reviewDirty} aria-label="Search crosswalk records" placeholder="Search home, group, site, city, or ID" value={search} onChange={(event) => setSearch(event.target.value)} /></label><span className="toolbar-chip">{isLive ? "Axon snapshot" : "Southeast AOR"}</span><span className="toolbar-chip critical">{visibleRows.length} review records</span></div>
+    <div className="review-layout"><div className="table-shell"><table role="grid"><caption className="sr-only">Crosswalk records. Select a row to review its mapping basis.</caption><thead><tr><th>Source type</th><th>Observed source</th><th>Suggested organizational unit</th><th>Mapping method</th><th>Confidence</th></tr></thead><tbody>{visibleRows.map((row) => { const key = rowKey(row); return <tr key={`${row.sourceType}-${key}`} className={selectedKey === key ? "selected keyboard-selectable" : "keyboard-selectable"} tabIndex="0" aria-selected={selectedKey === key} onClick={() => chooseRow(key)} onKeyDown={(event) => chooseRow(key, event)}><td>{row.sourceType}</td><td>{row.sourceId}</td><td>{row.suggestedUnit}</td><td>{row.mappingMethod}</td><td><span className={`confidence ${String(row.confidence).toLowerCase().replace(" ", "-")}`}>{row.confidence}</span></td></tr>; })}{!visibleRows.length && <tr><td colSpan="5">No crosswalk records match the current filters.</td></tr>}</tbody></table></div>
+      <aside className="record-detail">{selected ? <><div className="record-title"><DrawingPinIcon /><div><span>Selected {selected.sourceType}</span><h3>{selected.sourceId}</h3></div></div><dl><div><dt>Observed source</dt><dd>{selected.sourceId}</dd></div><div><dt>Normalized key / ID</dt><dd>{selected.normalizedKey || "—"}</dd></div><div><dt>Suggested organizational unit</dt><dd>{selected.suggestedUnit}</dd></div><div><dt>Mapping method</dt><dd>{selected.mappingMethod}</dd></div><div><dt>Review basis</dt><dd>{selected.reviewNotes}</dd></div></dl>{isLive ? <ReviewMappingEditor key={rowKey(selected)} source={selected} backendAvailable={backendAvailable} onDirtyChange={setReviewDirty} showToast={showToast} /> : <p>Illustrative records are not editable. Load a saved Axon snapshot to review observed records.</p>}<button type="button" className="secondary-button" disabled={reviewDirty} onClick={() => onOpenTable(selected.sourceType === "Device Home" ? "device-homes" : "axon-groups")}>Open full table (optional)</button></> : <p>No review records match the current filters.</p>}</aside>
     </div>
   </>;
 }
 
 function recordIdentity(row) {
-  return row.values["Site ID"] || row.values["Office Location ID"] || row.values["Facility ID"] || row.values["Group Name"] || row.values["Axon Group Name"] || row.values["Axon Group ID"] || `Row ${row.rowNumber}`;
+  return row.values["Canonical Field"] || row.values["Role Name"] || row.values["Directory Location"] || row.values["Exact Job Title"] || row.values["Site ID"] || row.values["Office Location ID"] || row.values["Facility ID"] || row.values["Group Name"] || row.values["Axon Group Name"] || row.values["Axon Group ID"] || `Row ${row.rowNumber}`;
 }
 
 function recordContext(row) {
@@ -501,7 +515,7 @@ function recordContext(row) {
 
 function recordStatus(row, drafts) {
   const values = { ...row.values, ...(drafts[row.rowNumber] || {}) };
-  return values["Mapping Status"] || values["Facility Link Status"] || values["Validation Status"] || values["Group Status"] || "Needs review";
+  return values["Review Status"] || values["Mapping Status"] || values["Facility Link Status"] || values["Validation Status"] || values["Group Status"] || "Needs review";
 }
 
 function CrosswalkEditor({ tableKey, backendAvailable, showToast, onDirtyChange, onSaved }) {
@@ -713,9 +727,9 @@ function CrosswalkPage({ setPage, showToast, rows, isLive, defaultReviewState, b
       <optgroup label="Locations">{["device-homes","facility-master","office-presences","site-group-relationships"].map(key => <option value={key} key={key}>{crosswalkTables[key].label}</option>)}</optgroup>
       <optgroup label="Axon Group setup">{["group-master","axon-groups","non-site-groups"].map(key => <option value={key} key={key}>{crosswalkTables[key].label}</option>)}</optgroup>
       <optgroup label="Advanced"><option value="directory-attributes">Directory field setup</option></optgroup>
-    </select></label><p>{workspace === "review" ? "Start with an observed name, then open its matching table to record a decision." : crosswalkTables[workspace].createDescription || "Review and edit shared mappings. Changes here do not write to Axon."}</p></div>
+    </select></label><p>{workspace === "review" ? "Select an observed name, edit its mapping here, and save the review decision." : crosswalkTables[workspace].createDescription || "Review and edit shared mappings. Changes here do not write to Axon."}</p></div>
     {workspace === "personnel-aor" && <button className="secondary-button" onClick={() => { if(tableDirty) {showToast("Save or discard changes before switching editors.");return;}setUseTable(!useTable); }}>{useTable ? "Use guided review" : "Use table editor / add rule"}</button>}
-    <div id="crosswalk-workspace-panel">{workspace === "review" ? <CrosswalkReviewQueue rows={rows} isLive={isLive} defaultReviewState={defaultReviewState} onOpenTable={switchWorkspace} /> : workspace === "personnel-aor" && !useTable && backendAvailable ? <LocationGuide onDirtyChange={setTableDirty} showToast={showToast} /> : <CrosswalkEditor key={workspace} tableKey={workspace} backendAvailable={backendAvailable} showToast={showToast} onDirtyChange={setTableDirty} />}</div>
+    <div id="crosswalk-workspace-panel">{workspace === "review" ? <CrosswalkReviewQueue rows={rows} isLive={isLive} defaultReviewState={defaultReviewState} onOpenTable={switchWorkspace} backendAvailable={backendAvailable} showToast={showToast} onDirtyChange={setTableDirty} /> : workspace === "personnel-aor" && !useTable && backendAvailable ? <LocationGuide onDirtyChange={setTableDirty} showToast={showToast} /> : <CrosswalkEditor key={workspace} tableKey={workspace} backendAvailable={backendAvailable} showToast={showToast} onDirtyChange={setTableDirty} />}</div>
   </section>;
 }
 
@@ -923,23 +937,61 @@ export function App() {
   const [governanceSummary, setGovernanceSummary] = useState(emptyGovernanceSummary);
   const [localWorkspaceDirty, setLocalWorkspaceDirty] = useState(false);
 
-  useEffect(() => {
-    Promise.all([localApi.health(), localApi.session(), localApi.config(), localApi.dashboard(), localApi.governanceSummary()]).then(([, sessionData, configData, dashboardData, governanceData]) => {
-      setBackendAvailable(true); setSession(sessionData); setConfig(configData); setLiveData(dashboardData); setGovernanceSummary(governanceData);
-      if (sessionData.activeJob) setSyncJob(sessionData.activeJob);
-    }).catch(() => setBackendAvailable(false));
-  }, []);
+  const [loadErrors, setLoadErrors] = useState({});
+  const [reloadWorkspace, setReloadWorkspace] = useState(0);
+  const dashboardRevision = useRef();
+  dashboardRevision.current = liveData.workspaceRevision;
+  useEffect(() => loadWorkspace(localApi, {
+    success(name, value) {
+      setLoadErrors(current => { const next = {...current}; delete next[name]; return next; });
+      if (name === "health") setBackendAvailable(true);
+      if (name === "session") { setSession(value); if (value.activeJob) setSyncJob(value.activeJob); }
+      if (name === "config") setConfig(value);
+      if (name === "dashboard") setLiveData(value);
+      if (name === "governanceSummary") setGovernanceSummary(value);
+    },
+    failure(name, error) {
+      if (name === "health") setBackendAvailable(false);
+      setLoadErrors(current => ({...current,[name]:error.message}));
+    },
+  }), [reloadWorkspace]);
 
   useEffect(() => {
-    if (!backendAvailable) return undefined;
-    const timer = window.setInterval(async () => {
+    if (!backendAvailable) return;
+    let active = true, pending = false;
+    const timer = setInterval(async () => {
+      if (pending) return;
+      pending = true;
       try {
-        const dashboardData = await localApi.dashboard();
-        if (dashboardData.workspaceRevision !== liveData.workspaceRevision) setLiveData(dashboardData);
-      } catch { /* keep the last complete shared baseline during transient local errors */ }
+        const revision = await localApi.revision();
+        if (active && revision.workspaceRevision !== dashboardRevision.current) {
+          const data = await localApi.dashboard();
+          if (active) { setLiveData(data); dashboardRevision.current = data.workspaceRevision; }
+        }
+      } catch { /* keep the last complete baseline; explicit panel Retry is available */ }
+      finally { pending = false; }
     }, 4000);
-    return () => window.clearInterval(timer);
-  }, [backendAvailable, liveData.workspaceRevision]);
+    return () => { active = false; clearInterval(timer); };
+  }, [backendAvailable]);
+
+  useEffect(() => {
+    if (!syncJob?.jobId || !["queued","running","cancel-requested"].includes(syncJob.status)) return;
+    let active = true, pending = false;
+    const timer = setInterval(async () => {
+      if (pending) return;
+      pending = true;
+      try {
+        const current = await localApi.syncStatus(syncJob.jobId);
+        if (!active) return;
+        setSyncJob(current);
+        if (current.status === "failed") setToast(current.error || "The pull failed; the previous baseline was retained.");
+        if (current.status === "canceled") setToast("Pull canceled safely; the previous baseline was retained.");
+        if (current.status === "complete") setToast("Selected resources refreshed. Saved views will update automatically.");
+      } catch (error) { if (active) setToast(error.message); }
+      finally { pending = false; }
+    }, 1000);
+    return () => { active = false; clearInterval(timer); };
+  }, [syncJob?.jobId, syncJob?.status]);
 
   const isLive = ["live", "filtered", "partial"].includes(liveData.mode);
   const summary = isLive && component !== "All Components" && liveData.mode !== "partial" ? liveData.componentSummaries?.[component] || { ...liveData.summary, totalDevices: 0, assignedDevices: 0, unassignedDevices: 0, inventoryExceptions: 0, mappedDevices: 0, mappingCompletion: 0, unmappedDeviceHomes: 0, regionCounts: {}, dispositionCounts: {} } : isLive ? liveData.summary : illustrativeSummary;
@@ -964,20 +1016,7 @@ export function App() {
   async function pullLiveData(values) {
     const started = await localApi.startSync(values);
     setSyncJob(started);
-    setToast("Read-only Axon pull started. The Device API may take time because requests are paced.");
-    let current = started;
-    while (["queued", "running", "cancel-requested"].includes(current.status)) {
-      await sleep(800);
-      current = await localApi.syncStatus(started.jobId);
-      setSyncJob(current);
-    }
-    if (current.status === "failed") throw new Error(current.error || "The live Axon pull failed.");
-    if (current.status === "canceled") {
-      setToast("Axon pull stopped safely after the active request. The prior dashboard snapshot was preserved.");
-      return;
-    }
-    const [dashboardData, sessionData] = await Promise.all([localApi.dashboard(), localApi.session()]);
-    setLiveData(dashboardData); setSession(sessionData); setToast(dashboardData.mode === "filtered" ? "Filtered Axon result loaded. It is labeled separately and does not replace confirmed full-device metrics." : dashboardData.mode === "partial" ? "Partial Axon resources loaded. Run a full Devices refresh before using device metrics." : "Full Axon baseline loaded into the dashboard.");
+    setToast("Read-only pull started in the background. You can close this panel and continue editing local mappings.");
   }
 
   async function cancelSync() {
@@ -1037,7 +1076,7 @@ export function App() {
     <div className="app-shell task-shell"><div className="app-workspace">
       {page !== "home" && <AppHeader page={page} component={component} setComponent={setComponent} orgView={orgView} setOrgView={setOrgView} isLive={isLive} dataMode={liveData.mode} session={session} lastSyncAt={liveData.lastSyncAt} backendAvailable={backendAvailable} onOpenConnection={()=>setConnectionOpen(true)} />}
       <SyncJobBanner job={syncJob} onOpen={()=>setConnectionOpen(true)} onCancel={cancelSync}/>
-      <main id="main-content" className="page-content" tabIndex="-1">{pageContent}</main>
+      <main id="main-content" className="page-content" tabIndex="-1">{Object.keys(loadErrors).length > 0 && <section className="inline-alert" role="alert"><div><strong>Some local panels could not load</strong>{Object.entries(loadErrors).map(([name,error])=><p key={name}>{name}: {error}</p>)}<button type="button" className="secondary-button" onClick={()=>setReloadWorkspace(v=>v+1)}>Retry local panels</button><p>Other available tables can still be edited. No Axon refresh is required to open local tables.</p></div></section>}{pageContent}</main>
       <footer className="prototype-footer">V3.2.0 · Python source prototype · Not a signed production desktop release</footer>
     </div>{toast && <div className="toast" role="status"><InfoCircledIcon /><span>{toast}</span><button type="button" aria-label="Dismiss notification" onClick={()=>setToast("")}><Cross2Icon /></button></div>}
     <ConnectionModal open={connectionOpen} backendAvailable={backendAvailable} config={config} session={session} syncJob={syncJob} onClose={()=>setConnectionOpen(false)} onSave={saveConnection} onPull={pullLiveData} onClear={clearCredentials} /></div></>;

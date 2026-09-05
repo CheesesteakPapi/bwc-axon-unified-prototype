@@ -12,6 +12,15 @@ def main():
     fixture.setUp()
     backend_server.initialize_governance_working_files()
     state = fixture.fixture()
+    state.workspace.activate_snapshot("DeviceHomes", [{
+        "Device Home Name (API)": "Synthetic Review Home",
+        "Normalized Device Home Key": "synthetic review home",
+    }])
+    state.workspace.activate_snapshot("Groups", [{
+        "Axon Group ID": "synthetic-review-group",
+        "External Group ID": "SYNTHETIC-REVIEW",
+        "Group Name": "Synthetic Review Group",
+    }])
     server = backend_server.make_server(0, state)
     print(f"http://127.0.0.1:{server.server_address[1]}/?launch={state.local_token}", flush=True)
     try:

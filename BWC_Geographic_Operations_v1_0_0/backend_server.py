@@ -71,6 +71,10 @@ LOCAL_UI_HEADER = "X-BWC-Local-UI"
 LOCAL_SESSION_COOKIE = "BWC_AXON_GEOGRAPHIC_SESSION"
 MAX_REQUEST_BYTES = 1_000_000
 RESOURCE_ORDER = ["DeviceHomes", "Groups", "Users", "Devices"]
+DEFAULT_TRACKED_DEVICE_MODELS = (
+    "axon_body_4_dock_8_bay,axon_body_4_dock_1_bay,taser_etm_flex_2,"
+    "axon_body_cam_4,taser_body_cam_3,taser_cew_10_handle"
+)
 CROSSWALK_ROOT = Path(os.environ.get("BWC_GOVERNANCE_ROOT", governance_root())).resolve()
 GOVERNANCE_STARTER_ROOT = Path(
     os.environ.get("BWC_GOVERNANCE_STARTER_ROOT", packaged_governance_starters(__file__))
@@ -516,6 +520,32 @@ def list_crosswalk(
         "storage": "shared-sqlite",
         "axonWrite": False,
     }
+
+
+def review_targets(key: str, source_key: str) -> dict[str, Any]:
+    """Read exact matches or vacant site slots; never infer a geographic link."""
+    fields = {"device-homes": "Normalized Device Home Key", "axon-groups": "Axon Group ID", "non-site-groups": "Axon Group ID"}
+    if key not in fields or not source_key.strip() or len(source_key) > 250:
+        raise UserInputError("Choose an observed Device Home or Axon Group.")
+    with CROSSWALK_LOCK:
+        spec, _, headers, rows, revision = _read_crosswalk(key)
+        identity = fields[key]
+        matches = [
+            {"rowNumber": number, "values": dict(row)}
+            for number, row in enumerate(rows, 1)
+            if row.get(identity, "").strip().casefold() == source_key.strip().casefold()
+        ]
+        vacant = [
+            {"rowNumber": number, "values": dict(row)}
+            for number, row in enumerate(rows, 1)
+            if not any(row.get(field, "").strip() for field in
+                       ([identity, "Device Home Name (API)"] if key == "device-homes"
+                        else [identity, "Axon Group Name", "External Group ID"]))
+            and row.get("Site ID", "").strip()
+        ] if key != "non-site-groups" else []
+    return {"key": key, "matches": matches, "targets": matches or vacant,
+            "editableFields": list(spec["editableFields"]), "fieldOptions": spec.get("fieldOptions", {}),
+            "allowCreate": bool(spec.get("allowCreate")), "revision": revision}
 
 
 def _clean_crosswalk_value(field: str, value: object) -> str:
@@ -1075,6 +1105,7 @@ def public_config() -> dict[str, Any]:
         "exists": exists,
         "agencyBaseUrl": str(config.get("agency_base_url") or ""),
         "timeoutSeconds": int(config.get("timeout_seconds", 90)),
+        "deviceModel": str(config.get("tracked_device_models", DEFAULT_TRACKED_DEVICE_MODELS) or ""),
         "rawJsonEnabled": False,
         "readOnly": True,
     }
@@ -1090,6 +1121,8 @@ def save_public_config(values: dict[str, Any]) -> dict[str, Any]:
     if timeout < 15 or timeout > 600:
         raise UserInputError("Timeout must be between 15 and 600 seconds.")
     config["timeout_seconds"] = timeout
+    if "deviceModel" in values:
+        config["tracked_device_models"] = clean_filter(values["deviceModel"], allow_commas=True)
     config["keep_raw_json"] = False
     temporary = CONFIG_PATH.with_suffix(".json.tmp")
     temporary.write_text(json.dumps(config, indent=2) + "\n", encoding="utf-8")
@@ -1344,6 +1377,7 @@ def build_dashboard_payload(
         crosswalk_review.append({
             "sourceType": "Axon Group",
             "sourceId": str(group.get("Group Name") or group.get("Axon Group ID") or ""),
+            "externalGroupId": str(group.get("External Group ID") or ""),
             "normalizedKey": str(group.get("Axon Group ID") or ""),
             "suggestedUnit": str(group.get("Group Classification") or "Unclassified"),
             "mappingMethod": "Group register",
@@ -1753,14 +1787,14 @@ class SessionState:
                 if active.get("status") in {"queued", "running", "cancel-requested"}:
                     raise UserInputError("A read-only Axon pull is already running.")
 
-        requested = body.get("resources") or RESOURCE_ORDER
+        requested = body.get("resources", list(RESOURCE_ORDER))
         if not isinstance(requested, list):
             raise UserInputError("Resources must be a list.")
         resources = [str(name) for name in requested if str(name) in RESOURCE_ORDER]
         if not resources:
             raise UserInputError("Select at least one Axon resource.")
-        if "Devices" in resources:
-            resources = list(dict.fromkeys(["DeviceHomes", "Users", *resources]))
+        # Reuse saved context. A Devices pull must not silently refresh all Users
+        # or Device Homes; absent resources remain unavailable until selected.
         resources = [name for name in RESOURCE_ORDER if name in resources]
 
         filters = {
@@ -2160,6 +2194,19 @@ class LocalAxonGeographicHandler(BaseHTTPRequestHandler):
                 self._error(HTTPStatus.BAD_REQUEST, str(exc))
             except Exception:
                 self._error(HTTPStatus.INTERNAL_SERVER_ERROR, "Unable to read saved records. Reload and try again.")
+            return
+        if path == "/api/workspace/revision":
+            self._send_json(HTTPStatus.OK, {"success": True, "workspaceRevision": self.state.workspace.revision()})
+            return
+        if path == "/api/review/targets":
+            try:
+                query = parse_qs(parsed.query, keep_blank_values=True)
+                payload = review_targets((query.get("key") or [""])[0], (query.get("sourceKey") or [""])[0])
+                self._send_json(HTTPStatus.OK, {"success": True, **payload})
+            except UserInputError as exc:
+                self._error(HTTPStatus.BAD_REQUEST, str(exc))
+            except Exception as exc:
+                self._error(HTTPStatus.INTERNAL_SERVER_ERROR, f"Review target table could not load: {exc}")
             return
         if path == "/api/workspace/status":
             self._send_json(HTTPStatus.OK, {"success": True, **self.state.workspace.status()})

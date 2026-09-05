@@ -2,6 +2,7 @@
   "_comment": "Copy to config.json. Put your Axon tenant URL in agency_base_url. Do not place Partner ID, Client ID, Client Secret, or access tokens in this file. Use --device-model, --device-status, or --device-home-id for a filtered read-only Device sync.",
   "agency_base_url": "https://YOUR_AGENCY.evidence.com",
   "timeout_seconds": 90,
+  "tracked_device_models": "axon_body_4_dock_8_bay,axon_body_4_dock_1_bay,taser_etm_flex_2,axon_body_cam_4,taser_body_cam_3,taser_cew_10_handle",
   "keep_raw_json": false,
   "raw_dir": "data/raw",
   "schema_dir": "data/schemas",

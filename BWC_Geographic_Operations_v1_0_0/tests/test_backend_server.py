@@ -137,6 +137,71 @@ class BackendServerTests(unittest.TestCase):
         self.assertNotIn("clientSecret", stored)
         self.assertNotIn("must-not-save", self.config_path.read_text(encoding="utf-8"))
 
+    def test_tracked_models_persist_without_credentials(self):
+        self.assertEqual(backend_server.public_config()["deviceModel"].split(","), [
+            "axon_body_4_dock_8_bay", "axon_body_4_dock_1_bay", "taser_etm_flex_2",
+            "axon_body_cam_4", "taser_body_cam_3", "taser_cew_10_handle",
+        ])
+        value = backend_server.save_public_config({
+            "agencyBaseUrl": "https://test-agency.evidence.com",
+            "deviceModel": "Synthetic A,Synthetic B",
+        })
+        self.assertEqual(value["deviceModel"], "Synthetic A,Synthetic B")
+        self.assertEqual(backend_server.public_config()["deviceModel"], value["deviceModel"])
+        with self.assertRaises(backend_server.UserInputError):
+            backend_server.save_public_config({
+                "agencyBaseUrl": "https://test-agency.evidence.com",
+                "deviceModel": ",".join(str(n) for n in range(26)),
+            })
+
+    def test_all_local_tables_load_independently(self):
+        backend_server.initialize_governance_working_files()
+        for key in backend_server.CROSSWALK_SPECS:
+            with self.subTest(table=key):
+                payload = backend_server.list_crosswalk(key)
+                self.assertTrue(payload["columns"])
+                self.assertTrue(payload["editableFields"])
+
+    def test_review_targets_are_explicit_and_preserve_partial_records(self):
+        initial = backend_server.review_targets("device-homes", "synthetic home")
+        self.assertFalse(initial["matches"])
+        self.assertGreater(len(initial["targets"]), 0)
+        target = initial["targets"][0]
+        backend_server.update_crosswalk_row("device-homes", target["rowNumber"], {
+            "changes": {"Device Home Name (API)": "Partial observed name"},
+            "expected": target["values"],
+        })
+        vacant = backend_server.review_targets("device-homes", "synthetic home")
+        self.assertNotIn(target["rowNumber"], [r["rowNumber"] for r in vacant["targets"]])
+        backend_server.update_crosswalk_row("device-homes", target["rowNumber"], {
+            "changes": {"Normalized Device Home Key": "synthetic home"},
+        })
+        exact = backend_server.review_targets("device-homes", " SYNTHETIC HOME ")
+        self.assertEqual([r["rowNumber"] for r in exact["matches"]], [target["rowNumber"]])
+        self.assertEqual(exact["targets"], exact["matches"])
+        non_site = backend_server.review_targets("non-site-groups", "synthetic group")
+        self.assertTrue(non_site["allowCreate"])
+        self.assertFalse(non_site["targets"])
+        with self.assertRaises(backend_server.UserInputError):
+            backend_server.review_targets("directory-attributes", "mail")
+
+    def test_device_only_model_pull_does_not_pull_other_resources(self):
+        state = backend_server.SessionState(client_factory=FakeAxonClient)
+        self.addCleanup(state.close)
+        state.set_credentials("fixture-partner", "fixture-client", "fixture-secret")
+        job = state.start_sync({"resources": ["Devices"], "deviceModel": "Body 4"})
+        deadline = time.time() + 5
+        result = state.job(job["jobId"])
+        while result["status"] in {"queued", "running"} and time.time() < deadline:
+            time.sleep(0.02)
+            result = state.job(job["jobId"])
+        self.assertEqual(result["status"], "complete", result.get("error"))
+        calls = FakeAxonClient.instances[-1].calls
+        self.assertEqual(len(calls), 1)
+        self.assertTrue(calls[0][0].endswith("/devices"))
+        self.assertEqual(calls[0][1]["model"], "Body 4")
+        self.assertEqual(result["receivedRecords"], 2)
+
     def test_shared_governance_initialization_is_missing_only(self):
         shared_root = self.temp_path / "shared" / "working"
         with patch.object(backend_server, "CROSSWALK_ROOT", shared_root):
@@ -176,7 +241,7 @@ class BackendServerTests(unittest.TestCase):
         state = backend_server.SessionState(client_factory=FakeAxonClient)
         try:
             state.set_credentials("agency-1234", "client-id", "client-secret")
-            full_job = state.start_sync({"resources": ["Devices", "Groups"]})
+            full_job = state.start_sync({"resources": ["DeviceHomes", "Users", "Devices", "Groups"]})
             deadline = time.time() + 5
             full_result = state.job(full_job["jobId"])
             while full_result["status"] in {"queued", "running"} and time.time() < deadline:

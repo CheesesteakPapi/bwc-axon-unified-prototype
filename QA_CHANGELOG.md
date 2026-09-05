@@ -1,5 +1,44 @@
 # QA and Change Log — V3.1.0
 
+## Unreleased Geographic Operations corrections — 2026-09-05
+
+- Independent startup requests prevent a failed summary or slow dashboard from
+  disabling healthy local table editors. Read requests time out with retry guidance;
+  write requests are not automatically timed out or retried.
+- Directory fields, roles, locations and job titles use recognizable record labels
+  and their governed review status in the editor.
+- Crosswalk review includes an inline mapping editor. Site targets are selected
+  explicitly; partial existing records are never offered as vacant slots. Axon
+  source identity is locked in this editor. Non-site Groups can be classified
+  without assigning a site. Existing validation, prior-value conflict checks,
+  backups and shared-workspace saves are reused. Dirty edits block navigation.
+- Devices no longer silently adds Users and Device Homes to the pull. Existing
+  shared snapshots provide context; absent context remains unavailable until
+  explicitly refreshed. Background pull progress remains visible after closing
+  connection settings.
+- The connection panel initially selects Device Homes only. Devices requires a
+  scope filter or explicit unfiltered-inventory selection. The six operator-supplied
+  exact model values are the default, editable, locally saved model filter:
+  axon_body_4_dock_8_bay, axon_body_4_dock_1_bay, taser_etm_flex_2,
+  axon_body_cam_4, taser_body_cam_3, taser_cew_10_handle.
+- Models are sent to Axon as a request filter, not just hidden after download.
+  Filtered snapshots remain separate from the full baseline. Existing full
+  snapshots are not deleted. Device page pacing remains unchanged.
+- A lightweight workspace revision check replaces unconditional four-second
+  dashboard reconstruction. This is local change detection, not an Axon delta feed.
+- Verification: 18 shared Python tests, 31 provisioning Python tests, 53 geographic
+  Python tests, 10 provisioning UI tests and 4 geographic UI tests passed (116).
+  Geographic assets rebuilt. Synthetic browser checks passed for inline Device
+  Home and non-site Group saves, automatic queue updates, dirty-navigation
+  protection and source-field editor save. No browser console errors observed.
+- Limits: the operator's precise Windows table failure has not been reproduced.
+  Windows 11 and real-tenant throughput acceptance remain pending. No live Axon
+  writes or agency-record imports were performed. Existing release ZIPs unchanged.
+- Incremental Axon refresh is NOT implemented or claimed: supplied clippings do
+  not establish a change-feed contract. Verify endpoint-specific change filters,
+  deletion signals and cursor semantics before merging deltas into saved baselines.
+  Local hashing alone cannot reduce the API records downloaded.
+
 ## Implemented verification
 
 | Area | Result | Evidence |

@@ -1,14 +1,32 @@
 const LOCAL_HEADERS = { "Content-Type": "application/json", "X-BWC-Local-UI": "1" };
 
 async function request(path, options = {}) {
-  const response = await fetch(path, {
+  const controller = new AbortController();
+  let timedOut = false;
+  const readOnly = !options.method || options.method === "GET";
+  const timer = readOnly ? setTimeout(() => { timedOut = true; controller.abort(); }, 30000) : null;
+  const abort = () => controller.abort();
+  options.signal?.addEventListener("abort", abort, { once: true });
+  if (options.signal?.aborted) controller.abort();
+  try {
+    const response = await fetch(path, {
     cache: "no-store",
     ...options,
+    signal: controller.signal,
     headers: options.method && options.method !== "GET" ? { ...LOCAL_HEADERS, ...(options.headers || {}) } : options.headers,
   });
-  const payload = await response.json().catch(() => ({}));
+  if (!(response.headers.get("Content-Type") || "").includes("application/json"))
+    throw new Error("The local service returned a web page instead of data. Restart with the Python launcher and use its opened URL.");
+  const payload = await response.json();
   if (!response.ok) throw new Error(payload.error || `Local request failed (${response.status}).`);
   return payload;
+  } catch (error) {
+    if (timedOut) throw new Error("Local data did not load within 30 seconds. Retry this panel; existing saved data has not been changed.");
+    throw error;
+  } finally {
+    clearTimeout(timer);
+    options.signal?.removeEventListener("abort", abort);
+  }
 }
 
 async function downloadSavedView(path, query) {
@@ -26,6 +44,8 @@ export const localApi = {
   session: () => request("/api/session"),
   config: () => request("/api/config"),
   dashboard: () => request("/api/live/dashboard"),
+  revision: () => request("/api/workspace/revision"),
+  reviewTargets: (key, sourceKey) => request(`/api/review/targets?${new URLSearchParams({key, sourceKey})}`),
   inventory: (query, signal) => request(`/api/inventory?${new URLSearchParams(query)}`, { signal }),
   assignments: (query, signal) => request(`/api/assignments?${new URLSearchParams(query)}`, { signal }),
   assignmentDevices: (query, signal) => request(`/api/assignments/devices?${new URLSearchParams(query)}`, { signal }),
