@@ -28,7 +28,17 @@ For existing users, open the account-update review, compare current and proposed
 
 Confirmed metrics reflect active Axon snapshots only. Pending cards and the Baseline + Pending projection are separate. Filter pending rows by proposed, submitted-awaiting-confirmation, failed, or superseded status. Device filters do not alter the full Devices baseline.
 
-### Export
+### Filter and export inventory (feature branch)
+
+1. Open **Inventory** in Geographic Operations. A saved Devices snapshot is sufficient; you do not need to reconnect after restarting the application.
+2. Combine Model, Disposition, Assignment state, Device Home, Component, and Mapped AOR. Search by serial number, device ID, assigned user, or location. **Review flags only** includes conditions to investigate; in-stock/unassigned devices may be expected.
+3. Check the scope banner and match count. **Next** and **Previous** page through the complete saved snapshot. Filters remain selected when you visit another screen and return.
+4. Select **Export matching CSV** to download all matching devices across all pages. The filename has a UTC timestamp; each row includes the Devices snapshot identity, hash, time, scope, workspace revision, and filters.
+5. If the shared data changed, use **Reload saved data**, review the updated results, and export again. Use **Reset filters** to clear the current selection.
+
+This CSV is for inventory review. The Provisioning Center generates its own strict import records. Geographic component/AOR filters use reviewed Device Home mappings and do not infer a user's organizational assignment.
+
+### Export a provisioning run
 
 Export creates one timestamped run ZIP for review. Do not upload it back into the same workflow. Store it only in an approved location because it can contain normalized personnel data.
 

@@ -16,6 +16,16 @@ export const localApi = {
   session: () => request("/api/session"),
   config: () => request("/api/config"),
   dashboard: () => request("/api/live/dashboard"),
+  inventory: (query, signal) => request(`/api/inventory?${new URLSearchParams(query)}`, { signal }),
+  exportInventory: async (query) => {
+    const response = await fetch(`/api/inventory/export?${new URLSearchParams(query)}`, { cache: "no-store" });
+    if (!response.ok) {
+      const payload = await response.json().catch(() => ({}));
+      throw new Error(payload.error || "Inventory export failed. Reload saved data and try again.");
+    }
+    const filename = response.headers.get("Content-Disposition")?.match(/filename="([^"]+)"/)?.[1] || "BWC_inventory.csv";
+    return { blob: await response.blob(), filename };
+  },
   governanceSummary: () => request("/api/governance/summary"),
   saveConfig: (values) => request("/api/config", { method: "POST", body: JSON.stringify(values) }),
   saveCredentials: (values) => request("/api/session/credentials", { method: "POST", body: JSON.stringify(values) }),

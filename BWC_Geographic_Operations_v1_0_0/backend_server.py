@@ -37,6 +37,7 @@ if str(SUITE_ROOT) not in sys.path:
     sys.path.insert(0, str(SUITE_ROOT))
 
 from shared_workspace import RefreshLeaseConflict, RevisionConflict, SharedWorkspace
+from inventory_views import FILTER_FIELDS, filter_inventory, inventory_csv, parse_inventory_query
 
 from audit_store import append_event, verify_chain
 from axon_sync import (
@@ -1191,6 +1192,7 @@ def build_dashboard_payload(
     job_resources: list[str],
     *,
     mode: str = "live",
+    inventory_limit: int | None = 500,
 ) -> dict[str, Any]:
     devices = rows.get("Devices", [])
     users = rows.get("Users", [])
@@ -1398,7 +1400,7 @@ def build_dashboard_payload(
             "groupClassificationCounts": dict(group_counts) if groups_available else {},
         },
         "componentSummaries": component_summaries,
-        "inventory": inventory[:500],
+        "inventory": inventory[:inventory_limit] if inventory_limit is not None else inventory,
         "assignments": assignments[:500],
         "crosswalkReview": crosswalk_review[:500],
         "groups": [
@@ -1624,6 +1626,57 @@ class SessionState:
             )
             dashboard["downloadScope"] = copy.deepcopy(self._download_scope)
         return dashboard
+
+    def inventory_view(self, query: dict[str, list[str]], *, export: bool = False) -> dict[str, Any]:
+        """Filter the complete saved device scope, independent of session downloads."""
+        try:
+            options = parse_inventory_query(query, export=export)
+        except ValueError as exc:
+            raise UserInputError(str(exc)) from exc
+        view = self.workspace.read_operational_view()
+        revision = view["workspaceRevision"]
+        expected = options["expectedRevision"]
+        if expected is not None and expected != revision:
+            raise RevisionConflict("The shared data changed. Reload inventory before exporting this view.")
+        rows, activated_at, scopes, mode = self._dashboard_source(view)
+        device_snapshot = next((item for item in view["snapshotMetadata"] if
+            item["resource"] == "Devices" and item["scope"] == scopes.get("Devices")), None)
+        filters = options["filters"]
+        if "Devices" in rows:
+            # Governance is read separately by the existing dashboard mapper.
+            # The revision check below rejects a concurrent governance change.
+            payload = build_dashboard_payload(rows, activated_at, {}, list(rows), mode=mode, inventory_limit=None)
+            inventory = payload["inventory"]
+        else:
+            inventory = []
+        matched = filter_inventory(inventory, filters)
+        total_pages = max(1, (len(matched) + options["pageSize"] - 1) // options["pageSize"])
+        page = min(options["page"], total_pages)
+        start = (page - 1) * options["pageSize"]
+        context = {
+            "mode": "full" if mode == "live" else "filtered" if mode == "filtered" else "unavailable",
+            "workspaceRevision": revision,
+            "deviceSnapshot": device_snapshot,
+            "filters": filters,
+            "total": len(matched),
+            "scopeTotal": len(inventory) if device_snapshot else None,
+            "page": page,
+            "pageSize": options["pageSize"],
+            "totalPages": total_pages,
+            "facets": {key: sorted({str(row.get(key) or "") for row in inventory} - {""}, key=str.casefold)
+                       for key in FILTER_FIELDS},
+            "rows": matched[start:start + options["pageSize"]],
+        }
+        if self.workspace.revision() != revision:
+            raise RevisionConflict("The shared data changed while inventory was loading. Reload this view.")
+        if export:
+            if device_snapshot is None:
+                raise UserInputError("Complete a Devices refresh before exporting inventory.")
+            context["exportedAt"] = utc_now_iso()
+            context["content"] = inventory_csv(matched, context)
+            timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
+            context["filename"] = f"BWC_inventory_{context['mode']}_R{revision}_{timestamp}.csv"
+        return context
 
     def job(self, job_id: str) -> dict[str, Any] | None:
         with self._lock:
@@ -2026,6 +2079,28 @@ class LocalAxonGeographicHandler(BaseHTTPRequestHandler):
             return
         if path == "/api/live/dashboard":
             self._send_json(HTTPStatus.OK, {"success": True, **self.state.dashboard()})
+            return
+        if path in {"/api/inventory", "/api/inventory/export"}:
+            try:
+                export = path.endswith("/export")
+                payload = self.state.inventory_view(parse_qs(parsed.query, keep_blank_values=True), export=export)
+                if export:
+                    self.send_response(HTTPStatus.OK)
+                    self.send_header("Content-Type", "text/csv; charset=utf-8")
+                    self.send_header("Content-Disposition", f'attachment; filename="{payload["filename"]}"')
+                    self.send_header("Content-Length", str(len(payload["content"])))
+                    self.send_header("Cache-Control", "no-store")
+                    self._security_headers()
+                    self.end_headers()
+                    self.wfile.write(payload["content"])
+                else:
+                    self._send_json(HTTPStatus.OK, {"success": True, **payload})
+            except RevisionConflict as exc:
+                self._error(HTTPStatus.CONFLICT, str(exc))
+            except UserInputError as exc:
+                self._error(HTTPStatus.BAD_REQUEST, str(exc))
+            except Exception:
+                self._error(HTTPStatus.INTERNAL_SERVER_ERROR, "Unable to read saved inventory. Reload and try again.")
             return
         if path == "/api/workspace/status":
             self._send_json(HTTPStatus.OK, {"success": True, **self.state.workspace.status()})

@@ -30,6 +30,8 @@ import {
   TableIcon,
 } from "./vendor/radix-icons/dist/react-icons.esm.js";
 import { localApi } from "./api.js";
+import { InventoryWorkspace } from "./InventoryWorkspace.jsx";
+import { emptyInventoryFilters } from "./inventoryView.js";
 
 const navGroups = [
   { label: "MONITOR", items: [["dashboard", "Dashboard", HomeIcon], ["map", "Map", DrawingPinIcon], ["exceptions", "Exceptions", ExclamationTriangleIcon]] },
@@ -220,7 +222,7 @@ function Sidebar({ page, setPage, exceptionCount, collapsed, setCollapsed }) {
 
 function AppHeader({ page, component, setComponent, orgView, setOrgView, isLive, dataMode, session, backendAvailable, onOpenConnection }) {
   const mapScoped = ["dashboard", "map", "report-preview"].includes(page);
-  const componentScoped = isLive && ["dashboard", "map", "inventory", "report-preview"].includes(page);
+  const componentScoped = isLive && ["dashboard", "map", "report-preview"].includes(page);
   const scopeCopy = page === "crosswalk" ? "Filters are inside Crosswalk Review" : page === "facilities" ? "Local facility governance" : ["access", "access-groups"].includes(page) ? "Users, roles, and Groups" : page === "assignments" ? "All observed assignments" : page === "reports" ? "Exports preserve their stated scope" : page === "provenance" ? "All loaded sources" : page === "settings" ? "Local preferences" : "Current workflow";
   return <header className={`topbar ${mapScoped || componentScoped ? "has-scope-controls" : "scope-compact"}`}>
     <div className="title-block"><div className="title-line"><h1>BWC Geographic Operations</h1><span className={`data-mode ${isLive ? "live" : "demo"}`}>{dataModeLabel(dataMode)}</span></div><p>{formatTimestamp(session.lastSyncAt)} <InfoCircledIcon aria-label="Data freshness information" /></p></div>
@@ -905,6 +907,7 @@ export function App() {
   const [page, setPage] = useState("dashboard");
   const [navCollapsed, setNavCollapsed] = useState(false);
   const [component, setComponent] = useState("All Components");
+  const [inventoryFilters, setInventoryFilters] = useState({ ...emptyInventoryFilters });
   const [orgView, setOrgView] = useState(() => window.localStorage.getItem("bwc-default-organizational-view") || "HSI Domestic AORs");
   const [connectionOpen, setConnectionOpen] = useState(false);
   const [selectedTask, setSelectedTask] = useState("mapping");
@@ -1008,9 +1011,10 @@ export function App() {
     if (page === "crosswalk") return <CrosswalkPage setPage={setPage} showToast={setToast} rows={crosswalkRows} isLive={isLive} defaultReviewState="All states" backendAvailable={backendAvailable} onDirtyChange={setLocalWorkspaceDirty} />;
     if (page === "facilities") return <FacilitiesPage backendAvailable={backendAvailable} governanceSummary={governanceSummary} showToast={setToast} onDirtyChange={setLocalWorkspaceDirty} onSaved={refreshGovernanceSummary} />;
     if (page === "access" || page === "access-groups") return <UsersAccessPage rows={assignmentRows} isLive={isLive} backendAvailable={backendAvailable} governanceSummary={governanceSummary} showToast={setToast} onDirtyChange={setLocalWorkspaceDirty} onSaved={refreshGovernanceSummary} initialWorkspace={page === "access-groups" ? "group-master" : "users"} />;
-    if (page === "inventory" || page === "assignments") return <DataTablePage type={page} rows={page === "inventory" ? inventoryRows : assignmentRows} isLive={isLive} hasDeviceScope={liveData.resources?.includes("Devices")} downloadAvailable={(liveData.availableDownloads || []).includes(page === "inventory" ? "devices" : "assignments")} downloadScope={liveData.downloadScope?.deviceScope} showToast={setToast} />;
+    if (page === "inventory") return <InventoryWorkspace filters={inventoryFilters} setFilters={setInventoryFilters} component={component} setComponent={setComponent} isLive={isLive} liveData={liveData} demoRows={illustrativeInventory} showToast={setToast} />;
+    if (page === "assignments") return <DataTablePage type={page} rows={assignmentRows} isLive={isLive} hasDeviceScope={liveData.resources?.includes("Devices")} downloadAvailable={(liveData.availableDownloads || []).includes("assignments")} downloadScope={liveData.downloadScope?.deviceScope} showToast={setToast} />;
     return <GenericPage page={page} setPage={setPage} showToast={setToast} isLive={isLive} liveData={liveData} summary={summary} component={component} orgView={orgView} setOrgView={setOrgView} onOpenConnection={() => setConnectionOpen(true)} onExit={shutdownApplication} />;
-  }, [page, selectedTask, orgView, liveData, isLive, summary, crosswalkRows, inventoryRows, assignmentRows, component, backendAvailable, governanceSummary]);
+  }, [page, selectedTask, orgView, liveData, isLive, summary, crosswalkRows, inventoryRows, assignmentRows, component, backendAvailable, governanceSummary, inventoryFilters]);
 
   return <><a className="skip-link" href="#main-content">Skip to main content</a><div className={`app-shell ${navCollapsed ? "nav-collapsed" : ""}`}><Sidebar page={page} setPage={(next) => { if (["crosswalk", "facilities", "access", "access-groups"].includes(page) && localWorkspaceDirty && next !== page) { setToast("Save or reset unsaved local governance changes before leaving the workspace."); return; } setPage(next); }} exceptionCount={summary.inventoryExceptions} collapsed={navCollapsed} setCollapsed={setNavCollapsed} /><div className="app-workspace"><AppHeader page={page} component={component} setComponent={setComponent} orgView={orgView} setOrgView={setOrgView} isLive={isLive} dataMode={liveData.mode} session={session} backendAvailable={backendAvailable} onOpenConnection={() => setConnectionOpen(true)} /><SyncJobBanner job={syncJob} onOpen={() => setConnectionOpen(true)} onCancel={cancelSync} /><main id="main-content" className="page-content" tabIndex="-1">{pageContent}</main></div>{toast && <div className="toast" role="status"><CheckCircledIcon /><span>{toast}</span><button type="button" aria-label="Dismiss notification" onClick={() => setToast("")}><Cross2Icon /></button></div>}<ConnectionModal open={connectionOpen} backendAvailable={backendAvailable} config={config} session={session} syncJob={syncJob} onClose={() => setConnectionOpen(false)} onSave={saveConnection} onPull={pullLiveData} onClear={clearCredentials} /></div></>;
 }

@@ -225,6 +225,21 @@ button:focus-visible, a:focus-visible, select:focus-visible, input:focus-visible
 .primary-button, .secondary-button { min-height: 44px; display: inline-flex; align-items: center; gap: 8px; padding: 0 16px; border-radius: 5px; font-weight: 650; }
 .primary-button { border: 1px solid var(--navy-800); background: var(--navy-800); color: #fff; }.secondary-button { border: 1px solid var(--slate-300); background: #fff; color: var(--navy-900); }
 .page-toolbar { min-height: 66px; display: flex; align-items: center; gap: 12px; padding: 10px 13px; border: 1px solid var(--slate-200); border-radius: 7px 7px 0 0; background: var(--slate-50); }
+.inventory-scope { display: grid; gap: 6px; padding: 16px; margin-bottom: 16px; border-left: 4px solid var(--blue-700); background: var(--slate-50); color: var(--slate-600); overflow-wrap: anywhere; }
+.inventory-scope strong { color: var(--navy-950); }
+.inventory-filter-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(220px, 100%), 1fr)); gap: 12px; padding: 16px; border: 1px solid var(--slate-200); border-radius: 8px; }
+.inventory-filter-grid label { display: flex; flex-direction: column; gap: 7px; min-width: 0; color: var(--slate-600); font-size: 12px; font-weight: 650; }
+.inventory-filter-grid input[type=search], .inventory-filter-grid select { width: 100%; min-width: 0; min-height: 44px; border: 1px solid var(--slate-300); border-radius: 5px; padding: 8px; background: #fff; color: var(--navy-950); font: inherit; }
+.inventory-filter-grid .inventory-review-toggle { flex-direction: row; align-items: center; gap: 10px; min-height: 44px; }
+.inventory-review-toggle input { width: 18px; height: 18px; }
+.inventory-filter-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; padding: 14px 0; }
+.inventory-chips { display: flex; flex: 1; flex-wrap: wrap; gap: 8px; }
+.inventory-chips button { min-height: 44px; max-width: 100%; overflow-wrap: anywhere; border: 1px solid var(--slate-300); border-radius: 18px; background: var(--slate-50); color: var(--blue-700); padding: 6px 12px; text-align: left; cursor: pointer; }
+.inventory-review-note { color: var(--slate-600); font-size: 13px; line-height: 1.5; }
+.inventory-error { padding: 16px; border: 1px solid #b42318; color: #8a1c13; border-radius: 6px; background: #fff4f2; }
+.inventory-workspace table caption { text-align: left; padding: 12px; font-weight: 650; }
+.inventory-workspace .crosswalk-pagination { grid-template-columns: 1fr auto; }
+@media (max-width: 680px) { .inventory-workspace .crosswalk-pagination { grid-template-columns: 1fr; } }
 .page-toolbar label:not(.search-control) { display: flex; flex-direction: column; gap: 5px; font-size: 11px; font-weight: 650; }.page-toolbar select { min-width: 170px; min-height: 44px; border: 1px solid var(--slate-300); background: #fff; border-radius: 4px; padding: 0 10px; }
 .search-control { min-height: 44px; min-width: 330px; display: flex; align-items: center; gap: 8px; padding: 0 12px; border: 1px solid var(--slate-300); border-radius: 5px; background: #fff; }.search-control input { width: 100%; border: 0; outline: 0; }.search-control svg { color: var(--slate-600); }
 .toolbar-chip, .count-chip { padding: 7px 11px; border-radius: 999px; background: var(--blue-100); color: var(--blue-700); font-size: 12px; font-weight: 650; }.toolbar-chip.critical { background: var(--red-100); color: var(--red-700); }

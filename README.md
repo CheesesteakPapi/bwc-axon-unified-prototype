@@ -5,6 +5,8 @@
 
 V3.1.0 combines Provisioning Center and Geographic Operations around one authoritative, per-user SQLite workspace. Operators can paste or upload a minimal roster, enrich it, resolve exceptions, edit assignments in Preview, approve existing-account changes, submit deliberately, and track jobs without downloading and re-uploading intermediate files.
 
+Development on `feature/future-enhancements` begins with full-snapshot inventory filtering and matching CSV export. See [Feature enhancements](FEATURE_ENHANCEMENTS.md) for the implemented increment and prioritized follow-on work, and [Feature QA](FEATURE_QA.md) for verification.
+
 ## Repository data boundary
 
 This private source repository contains code, documentation, and small synthetic fixtures only. It intentionally excludes tenant snapshots, deployment workbooks, working crosswalks, organizational map images, generated databases, raw API responses, exports, credentials, and tenant-specific configuration. Every bundled record uses `DEMO`, `TEST`, `Example`, or reserved placeholder values.

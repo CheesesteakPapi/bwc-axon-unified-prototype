@@ -7,6 +7,8 @@ Distribution: source ZIP; standard-user setup; no native executable or signature
 
 ## Release outcome
 
+Feature-branch development, 2026-09-04: added complete saved-inventory filtering, paging, and matching CSV export, including reuse after restart. Filters persist during navigation, exports include snapshot/filter provenance, and stale exports return a conflict. This development increment is documented in `FEATURE_ENHANCEMENTS.md` and `FEATURE_QA.md`; it is not a new packaged release.
+
 V3.1.0 replaces the file-handoff prototype with a unified local operating model. Provisioning Center and Geographic Operations now use one revision-aware SQLite workspace. Completed Axon snapshots, governed mappings, pending provisioning changes, run history, and job state are available to both applications without a second API call or intermediate roster download/re-upload.
 
 ## Provisioning changes
