@@ -1,9 +1,9 @@
-BWC AXON UNIFIED PROTOTYPE V3.1.0
+BWC AXON UNIFIED PROTOTYPE V3.2.0
 Prototype - Python/PowerShell source execution
 Not a signed production desktop release
 
 WINDOWS 11 QUICK START
-1. Extract this package to C:\BWC31.
+1. Extract this package to C:\BWC32.
 2. Run Setup-BWC-Prototype.cmd once. No administrator elevation is required.
 3. Run Start-Provisioning-Prototype.cmd or Start-Geographic-Prototype.cmd.
 4. Keep the PowerShell window open and use the browser page opened by the launcher.
@@ -17,3 +17,13 @@ and WINDOWS_11_ACCEPTANCE.md for the remaining acceptance gates.
 
 Do not enter live credentials or submit Axon writes unless your organization has
 approved the prototype test, client permissions, mappings, and test window.
+
+MACOS QUICK START
+Use an approved Python 3.11+ runtime.
+Run Setup-BWC-Prototype-macOS.command, then either Start-*-macOS.command.
+An authorized Terminal alternative is: bash Setup-BWC-Prototype-macOS.command
+
+V3.2 TESTING
+Read TESTING_APPROVAL_V3_2_0.md for an isolated test workspace.
+Read USER_MANUAL_V3_2_0.md for current navigation and RELEASE_NOTES_V3_2_0.md
+for changes. Older manuals are retained as historical reference.

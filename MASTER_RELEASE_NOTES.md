@@ -1,4 +1,12 @@
-# Master Release Notes — BWC Axon Unified Prototype V3.1.0
+# Master Release Notes — BWC Axon Unified Prototype
+
+## V3.2.0 — controlled testing candidate, 2026-09-04
+
+Task Home, guided personnel mapping, plain-language setup selection, paged person review, catalog-driven role suggestions, paste handling and approval safeguards. Includes the saved-inventory and assignment enhancements previously developed on main. Source launchers for Windows and macOS; no native signing or production acceptance claim.
+
+See RELEASE_NOTES_V3_2_0.md, USER_MANUAL_V3_2_0.md, TESTING_APPROVAL_V3_2_0.md and QA_V3_2_0.md. PRODUCT_ROADMAP.md records remaining enhancement work and acceptance gates.
+
+## Historical V3.1.0 record
 
 Release date: 2026-09-02
 Correction update: 2026-09-04

@@ -5,7 +5,7 @@ $ErrorActionPreference = 'Stop'
 $Root = Split-Path -Parent $MyInvocation.MyCommand.Path
 $Venv = Join-Path $Root '.venv'
 
-Write-Host 'BWC Axon Unified Prototype V3.1.0 setup'
+Write-Host 'BWC Axon Unified Prototype V3.2.0 setup'
 Write-Host 'Prototype - Python/PowerShell source execution'
 Write-Host 'Not a signed production desktop release'
 
@@ -28,7 +28,7 @@ if (Test-Path (Join-Path $Venv 'Scripts\python.exe')) {
 }
 
 $Python = Join-Path $Venv 'Scripts\python.exe'
-& $Python -m pip install --disable-pip-version-check --require-hashes -r (Join-Path $Root 'requirements.lock')
+& $Python -m pip install --no-index --disable-pip-version-check --require-hashes -r (Join-Path $Root 'requirements.lock')
 if ($LASTEXITCODE -ne 0) { throw 'Runtime dependency verification failed.' }
 
 & $Python -m py_compile `

@@ -1,11 +1,11 @@
-# BWC Axon Unified Prototype V3.1.0
+# BWC Axon Unified Prototype V3.2.0
 
 > **Prototype — Python/PowerShell source execution**
 > **Not a signed production desktop release**
 
-V3.1.0 combines Provisioning Center and Geographic Operations around one authoritative, per-user SQLite workspace. Operators can paste or upload a minimal roster, enrich it, resolve exceptions, edit assignments in Preview, approve existing-account changes, submit deliberately, and track jobs without downloading and re-uploading intermediate files.
+V3.2.0 combines Provisioning Center and Geographic Operations around one authoritative, per-user SQLite workspace. Operators can paste or upload a minimal roster, enrich it, resolve exceptions, edit assignments in Preview, approve existing-account changes, submit deliberately, and track jobs without downloading and re-uploading intermediate files.
 
-Development on `feature/future-enhancements` adds full-snapshot inventory filters, user assignment filters and exact-device drilldowns, and all-matching CSV exports. See [Feature enhancements](FEATURE_ENHANCEMENTS.md) for implemented increments and prioritized follow-on work, and [Feature QA](FEATURE_QA.md) for verification.
+V3.2.0 adds a task-focused Home, guided location matching, plain-language setup labels, approved-role suggestions, and a paged person-review editor. The previous saved-inventory and assignment enhancements are included. Begin with `TESTING_APPROVAL_V3_2_0.md`; see `RELEASE_NOTES_V3_2_0.md` for scope and `PRODUCT_ROADMAP.md` for follow-on work.
 
 ## Repository data boundary
 
@@ -21,9 +21,9 @@ This check is a release guard, not a substitute for agency review or GitHub acce
 
 ## Start on Windows 11
 
-1. Extract the ZIP to a short path such as `C:\BWC31`.
+1. Extract the ZIP to a short path such as `C:\BWC32`.
 2. Install an organization-approved 64-bit Python 3.11 or newer for the current user if it is not already installed.
-3. Double-click `Setup-BWC-Prototype.cmd` once. It creates `C:\BWC31\.venv`; it does not require elevation.
+3. Double-click `Setup-BWC-Prototype.cmd` once. It creates `C:\BWC32\.venv`; it does not require elevation.
 4. Start either application:
    - `Start-Provisioning-Prototype.cmd`
    - `Start-Geographic-Prototype.cmd`
@@ -68,7 +68,7 @@ Governed CSVs are imported once with their original paths and SHA-256 values rec
 
 ## Included components
 
-- `Axon_BWC_Provisioning_Center_v1_0_0` — V3.1 workflow UI and local service.
+- `Axon_BWC_Provisioning_Center_v1_0_0` — V3.2 workflow UI and local service.
 - `BWC_Geographic_Operations_v1_0_0` — shared dashboards, snapshots, facilities, mappings, and pending overlays.
 - `Axon_BWC_Sync_Prototype_v0_2_6` — read-only command-line sync that uses the same refresh leases and scoped snapshots.
 - `shared_workspace.py` — shared schema, revision, snapshot, governance, audit, overlay, and chunk store.
