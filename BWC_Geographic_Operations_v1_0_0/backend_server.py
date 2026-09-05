@@ -61,7 +61,7 @@ from runtime_paths import (
 from desktop_message import show_error
 from instance_lock import SingleInstanceLock
 
-VERSION = "3.1.0"
+VERSION = "3.2.0"
 BASE_DIR = Path(__file__).resolve().parent
 STATIC_DIR = BASE_DIR / "dist" / "client"
 RUNTIME_ROOT = component_root("geographic-operations")
@@ -2367,7 +2367,7 @@ def main() -> int:
     print(f"Local address: {url}")
     if selected_port != args.port:
         print(f"Port {args.port} was unavailable; selected an available local loopback port.")
-    print("Credentials and live rows remain only in this process and are cleared when it exits.")
+    print("Credentials remain in this process. Completed normalized snapshots persist in the shared workspace.")
     print("Axon operational resource calls are read-only GET requests.")
     print(f"Governance working directory: {CROSSWALK_ROOT}")
     if created:

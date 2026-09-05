@@ -50,6 +50,7 @@ from provisioning_workflow import (
     enrich_rows,
     export_run_package,
     group_options,
+    role_options,
     parse_intake_file,
     write_csv,
 )
@@ -74,7 +75,7 @@ STATIC_DIR = BASE_DIR / "dist" / "client"
 RUNTIME_ROOT = component_root("provisioning-center")
 CONFIG_PATH = RUNTIME_ROOT / "config.json"
 CONFIG_EXAMPLE_PATH = BASE_DIR / "config.example.json"
-VERSION = "3.1.0"
+VERSION = "3.2.0"
 MAX_REQUEST_BYTES = 28 * 1024 * 1024
 MAX_UPLOAD_BYTES = 20 * 1024 * 1024
 LOCAL_UI_HEADER = "X-Axon-Local-UI"
@@ -1333,6 +1334,9 @@ class LocalAxonHandler(BaseHTTPRequestHandler):
             return
         if parsed.path == "/api/catalogs/groups":
             self._send_json(HTTPStatus.OK, {"success": True, "groups": group_options(self.state.workspace)})
+            return
+        if parsed.path == "/api/catalogs/roles":
+            self._send_json(HTTPStatus.OK, {"success": True, "roles": role_options(self.state.workspace)})
             return
         refresh_match = re.fullmatch(r"/api/workspace/refresh/([^/]+)", parsed.path)
         if refresh_match:

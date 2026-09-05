@@ -30,6 +30,9 @@ import {
   TableIcon,
 } from "./vendor/radix-icons/dist/react-icons.esm.js";
 import { localApi } from "./api.js";
+import { TaskHome, TaskNavigation } from "../../ui/TaskHome.jsx";
+import "../../ui/theme.css";
+import { LocationGuide } from "./LocationGuide.jsx";
 import { InventoryWorkspace } from "./InventoryWorkspace.jsx";
 import { emptyInventoryFilters } from "./inventoryView.js";
 import { AssignmentWorkspace, emptyAssignmentFilters } from "./AssignmentWorkspace.jsx";
@@ -221,12 +224,12 @@ function Sidebar({ page, setPage, exceptionCount, collapsed, setCollapsed }) {
   </aside>;
 }
 
-function AppHeader({ page, component, setComponent, orgView, setOrgView, isLive, dataMode, session, backendAvailable, onOpenConnection }) {
+function AppHeader({ page, component, setComponent, orgView, setOrgView, isLive, dataMode, session, lastSyncAt, backendAvailable, onOpenConnection }) {
   const mapScoped = ["dashboard", "map", "report-preview"].includes(page);
   const componentScoped = isLive && ["dashboard", "map", "report-preview"].includes(page);
   const scopeCopy = page === "crosswalk" ? "Filters are inside Crosswalk Review" : page === "facilities" ? "Local facility governance" : ["access", "access-groups"].includes(page) ? "Users, roles, and Groups" : page === "assignments" ? "All observed assignments" : page === "reports" ? "Exports preserve their stated scope" : page === "provenance" ? "All loaded sources" : page === "settings" ? "Local preferences" : "Current workflow";
   return <header className={`topbar ${mapScoped || componentScoped ? "has-scope-controls" : "scope-compact"}`}>
-    <div className="title-block"><div className="title-line"><h1>BWC Geographic Operations</h1><span className={`data-mode ${isLive ? "live" : "demo"}`}>{dataModeLabel(dataMode)}</span></div><p>{formatTimestamp(session.lastSyncAt)} <InfoCircledIcon aria-label="Data freshness information" /></p></div>
+    <div className="title-block"><div className="title-line"><h1>BWC Geographic Operations</h1><span className={`data-mode ${isLive ? "live" : "demo"}`}>{dataModeLabel(dataMode)}</span></div><p>{isLive ? (lastSyncAt ? formatTimestamp(lastSyncAt) : "Saved Axon snapshot · see per-resource refresh details") : "Synthetic demonstration data · not an Axon snapshot"} <InfoCircledIcon aria-label="Data freshness information" /></p></div>
     {componentScoped && <label className="select-control"><span>Component <small>Dashboard, map, inventory</small></span><select value={component} onChange={(event) => setComponent(event.target.value)}><option>All Components</option><option>HSI</option><option>ERO</option><option>OCIO</option></select></label>}
     {mapScoped && <label className="select-control wide"><span>Organizational View <small>Map and report only</small></span><select value={orgView} onChange={(event) => setOrgView(event.target.value)}><option>HSI Domestic AORs</option><option>OCIO Areas</option><option>ERO Field Office AORs</option><option>HSI International</option></select></label>}
     {!mapScoped && !componentScoped && <div className="header-scope-note"><strong>Page scope</strong><span>{scopeCopy}</span></div>}
@@ -429,18 +432,18 @@ function Dashboard({ selectedTask, setSelectedTask, setPage, orgView, liveData, 
 }
 
 const crosswalkTables = {
-  "approved-roles": { label: "Approved Axon Role catalog", shortLabel: "Axon Roles", supportsCreate: true, createLabel: "Add role", createTitle: "Add a reviewed Axon Role", createDescription: "Use the exact tenant Role name. Role approval is distinct from Entra group membership." },
-  "personnel-aor": { label: "Personnel Location-to-AOR", shortLabel: "Personnel AOR", supportsCreate: true, createLabel: "Add location rule", createTitle: "Add a personnel Location-to-AOR rule", createDescription: "Personnel Location and AOR govern Axon Group recommendations; device location is comparison-only." },
-  "job-categories": { label: "Exact job-title categories", shortLabel: "Job Categories", supportsCreate: true, createLabel: "Add job title", createTitle: "Classify an exact directory job title", createDescription: "Map only an exact observed title to Standard User, First-Line Supervisor, or Senior/Second-Line Supervisor." },
-  "group-rules": { label: "Component/AOR/Job Group rules", shortLabel: "Group Rules", supportsCreate: true, createLabel: "Add Group rule", createTitle: "Add an optional Group recommendation rule", createDescription: "A rule may remain unreviewed, and Group Name may remain blank. Selected Groups must resolve against the current Axon Group master; never construct an unverified external ID." },
-  "directory-attributes": { label: "Directory attribute mapping", shortLabel: "Directory Attributes" },
-  "device-homes": { label: "Device Home table", shortLabel: "Device Homes" },
-  "axon-groups": { label: "Axon Group table", shortLabel: "Axon Groups" },
-  "non-site-groups": { label: "Non-site Group register", shortLabel: "Non-site Groups", supportsCreate: true, createLabel: "Add non-site Group", createTitle: "Add a non-site Group", createDescription: "Use this legacy-compatible register for observed command, role-related, training, enterprise, or administrative Groups that do not belong to a physical office location." },
-  "facility-master": { label: "Facility Master", shortLabel: "Facilities", supportsCreate: true, createLabel: "Add facility", createTitle: "Add a physical facility", createDescription: "Create a reviewed physical building or campus record. Do not combine offices based on address similarity alone." },
-  "office-presences": { label: "Office Presence register", shortLabel: "Office Presences" },
-  "group-master": { label: "Tiered Group Master", shortLabel: "Group Master", supportsCreate: true, createLabel: "Add observed Group", createTitle: "Add an observed Axon Group", createDescription: "Record the exact observed Group first, then classify its purpose, tier, parent, organizational area, and site relationship." },
-  "site-group-relationships": { label: "Site-to-Group relationships", shortLabel: "Site-to-Group Relationships", supportsCreate: true, createLabel: "Add relationship", createTitle: "Add a site-to-Group relationship", createDescription: "Connect an observed Group to an Office Location ID or reviewed Facility ID without treating user records as site evidence." },
+  "approved-roles": { label: "Allowed Axon roles", shortLabel: "Axon Roles", supportsCreate: true, createLabel: "Add role", createTitle: "Add a reviewed Axon Role", createDescription: "Use the exact tenant Role name. Role approval is distinct from Entra group membership." },
+  "personnel-aor": { label: "Personnel location to area", shortLabel: "Personnel AOR", supportsCreate: true, createLabel: "Add location rule", createTitle: "Add a personnel Location-to-AOR rule", createDescription: "Personnel Location and AOR govern Axon Group recommendations; device location is comparison-only." },
+  "job-categories": { label: "Job title categories", shortLabel: "Job Categories", supportsCreate: true, createLabel: "Add job title", createTitle: "Classify an exact directory job title", createDescription: "Map only an exact observed title to Standard User, First-Line Supervisor, or Senior/Second-Line Supervisor." },
+  "group-rules": { label: "Recommended Axon Groups", shortLabel: "Group Rules", supportsCreate: true, createLabel: "Add Group rule", createTitle: "Add an optional Group recommendation rule", createDescription: "A rule may remain unreviewed, and Group Name may remain blank. Selected Groups must resolve against the current Axon Group master; never construct an unverified external ID." },
+  "directory-attributes": { label: "Directory field setup", shortLabel: "Directory Attributes" },
+  "device-homes": { label: "Device Home to site", shortLabel: "Device Homes" },
+  "axon-groups": { label: "Group organization matches", shortLabel: "Axon Groups" },
+  "non-site-groups": { label: "Groups without a site", shortLabel: "Non-site Groups", supportsCreate: true, createLabel: "Add non-site Group", createTitle: "Add a non-site Group", createDescription: "Use this legacy-compatible register for observed command, role-related, training, enterprise, or administrative Groups that do not belong to a physical office location." },
+  "facility-master": { label: "Physical sites", shortLabel: "Facilities", supportsCreate: true, createLabel: "Add facility", createTitle: "Add a physical facility", createDescription: "Create a reviewed physical building or campus record. Do not combine offices based on address similarity alone." },
+  "office-presences": { label: "Offices at each site", shortLabel: "Office Presences" },
+  "group-master": { label: "Axon Groups and hierarchy", shortLabel: "Group Master", supportsCreate: true, createLabel: "Add observed Group", createTitle: "Add an observed Axon Group", createDescription: "Record the exact observed Group first, then classify its purpose, tier, parent, organizational area, and site relationship." },
+  "site-group-relationships": { label: "Groups linked to sites", shortLabel: "Site-to-Group Relationships", supportsCreate: true, createLabel: "Add relationship", createTitle: "Add a site-to-Group relationship", createDescription: "Connect an observed Group to an Office Location ID or reviewed Facility ID without treating user records as site evidence." },
 };
 
 const crosswalkSelectOptions = {
@@ -694,6 +697,7 @@ function CrosswalkEditor({ tableKey, backendAvailable, showToast, onDirtyChange,
 
 function CrosswalkPage({ setPage, showToast, rows, isLive, defaultReviewState, backendAvailable, onDirtyChange }) {
   const [workspace, setWorkspace] = useState("review");
+  const [useTable, setUseTable] = useState(false);
   const [tableDirty, setTableDirty] = useState(false);
   useEffect(() => { onDirtyChange(tableDirty); }, [tableDirty, onDirtyChange]);
   useEffect(() => () => onDirtyChange(false), [onDirtyChange]);
@@ -701,20 +705,17 @@ function CrosswalkPage({ setPage, showToast, rows, isLive, defaultReviewState, b
     if (tableDirty && next !== workspace) { showToast("Save or reset unsaved crosswalk changes before switching tables."); return; }
     setWorkspace(next);
   }
-  function handleTabKey(event) {
-    if (!["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) return;
-    event.preventDefault();
-    const keys = ["review", ...Object.keys(crosswalkTables)];
-    const currentIndex = keys.indexOf(workspace);
-    const nextIndex = event.key === "Home" ? 0 : event.key === "End" ? keys.length - 1 : event.key === "ArrowRight" ? (currentIndex + 1) % keys.length : (currentIndex - 1 + keys.length) % keys.length;
-    if (tableDirty) { showToast("Save or reset unsaved crosswalk changes before switching tables."); return; }
-    setWorkspace(keys[nextIndex]);
-    window.setTimeout(() => document.getElementById(`crosswalk-tab-${keys[nextIndex]}`)?.focus(), 0);
-  }
   return <section className="data-page crosswalk-workspace">
-    <div className="page-heading"><div><p className="eyebrow">MANAGE · LOCAL WORKSPACE</p><h2>Crosswalk Workspace</h2><p>Review provisional matches or edit the governed Device Home and Axon Group tables in the shared workspace.</p></div><button type="button" className="secondary-button" onClick={() => tableDirty ? showToast("Save or reset unsaved crosswalk changes before leaving the workspace.") : setPage("dashboard")}><ArrowLeftIcon /> Back to dashboard</button></div>
-    <div className="workspace-tabs" role="tablist" aria-label="Crosswalk workspace views" onKeyDown={handleTabKey}><button id="crosswalk-tab-review" type="button" role="tab" aria-controls="crosswalk-workspace-panel" aria-selected={workspace === "review"} tabIndex={workspace === "review" ? 0 : -1} className={workspace === "review" ? "active" : ""} onClick={() => switchWorkspace("review")}><DashboardIcon /> Review queue</button>{Object.entries(crosswalkTables).map(([key, definition]) => <button id={`crosswalk-tab-${key}`} type="button" role="tab" aria-controls="crosswalk-workspace-panel" aria-selected={workspace === key} tabIndex={workspace === key ? 0 : -1} className={workspace === key ? "active" : ""} onClick={() => switchWorkspace(key)} key={key}><TableIcon /> {definition.label}</button>)}</div>
-    <div id="crosswalk-workspace-panel" role="tabpanel" aria-labelledby={`crosswalk-tab-${workspace}`}>{workspace === "review" ? <CrosswalkReviewQueue rows={rows} isLive={isLive} defaultReviewState={defaultReviewState} onOpenTable={switchWorkspace} /> : <CrosswalkEditor key={workspace} tableKey={workspace} backendAvailable={backendAvailable} showToast={showToast} onDirtyChange={setTableDirty} />}</div>
+    <div className="page-heading"><div><h2>Setup & rules</h2><p>Choose a task below. People, physical sites, Device Homes, and Axon Groups remain distinct.</p></div><button type="button" className="secondary-button" onClick={() => tableDirty ? showToast("Save or reset unsaved crosswalk changes before leaving the workspace.") : setPage("dashboard")}><ArrowLeftIcon /> Back to dashboard</button></div>
+    <div className="mapping-task-picker"><label><span>What would you like to manage?</span><select value={workspace} onChange={e => switchWorkspace(e.target.value)}>
+      <option value="review">Matches needing review</option>
+      <optgroup label="People rules">{["approved-roles","personnel-aor","job-categories","group-rules"].map(key => <option value={key} key={key}>{crosswalkTables[key].label}</option>)}</optgroup>
+      <optgroup label="Locations">{["device-homes","facility-master","office-presences","site-group-relationships"].map(key => <option value={key} key={key}>{crosswalkTables[key].label}</option>)}</optgroup>
+      <optgroup label="Axon Group setup">{["group-master","axon-groups","non-site-groups"].map(key => <option value={key} key={key}>{crosswalkTables[key].label}</option>)}</optgroup>
+      <optgroup label="Advanced"><option value="directory-attributes">Directory field setup</option></optgroup>
+    </select></label><p>{workspace === "review" ? "Start with an observed name, then open its matching table to record a decision." : crosswalkTables[workspace].createDescription || "Review and edit shared mappings. Changes here do not write to Axon."}</p></div>
+    {workspace === "personnel-aor" && <button className="secondary-button" onClick={() => { if(tableDirty) {showToast("Save or discard changes before switching editors.");return;}setUseTable(!useTable); }}>{useTable ? "Use guided review" : "Use table editor / add rule"}</button>}
+    <div id="crosswalk-workspace-panel">{workspace === "review" ? <CrosswalkReviewQueue rows={rows} isLive={isLive} defaultReviewState={defaultReviewState} onOpenTable={switchWorkspace} /> : workspace === "personnel-aor" && !useTable && backendAvailable ? <LocationGuide onDirtyChange={setTableDirty} showToast={showToast} /> : <CrosswalkEditor key={workspace} tableKey={workspace} backendAvailable={backendAvailable} showToast={showToast} onDirtyChange={setTableDirty} />}</div>
   </section>;
 }
 
@@ -871,7 +872,7 @@ function ReportsPage({ showToast, isLive, liveData, summary, component, orgView,
   const resources = ["Devices", "Users", "Groups", "DeviceHomes"];
   const available = liveData.availableDownloads || [];
   const downloadScope = liveData.downloadScope?.deviceScope;
-  return <section className="data-page"><div className="page-heading"><div><p className="eyebrow">GOVERNANCE · {isLive ? "AXON DATA" : "ILLUSTRATIVE"}</p><h2>Reports & Exports</h2><p>Create a scoped readiness brief or export locally held session data.</p></div></div><div className="report-scope-summary"><InfoCircledIcon /><div><strong>Report scope</strong><span>{isLive ? `${component} · ${dataModeLabel(liveData.mode)}` : "Illustrative national sample"} · {orgView} · {formatTimestamp(liveData.lastSyncAt)}</span></div></div><div className="report-grid"><article><FileTextIcon /><h3>Geographic readiness brief</h3><p>Preview a landscape report containing scope, metrics, map, priority risks, calculation, and provenance before printing or saving as PDF.</p><button type="button" className="primary-button" onClick={() => setPage("report-preview")}>Preview PDF report</button></article><article><TableIcon /><h3>{isLive ? "Axon session exports" : "Current illustrative dataset"}</h3><p>{isLive ? available.length ? `Available CSV exports come from this session's ${downloadScope === "filtered" ? "filtered" : "stated"} pull. They may differ from a persisted full baseline.` : "No session export is available. Run the required resource refresh in this application to generate one." : "CSV export containing the stated illustrative dashboard scope."}</p>{isLive ? <div className="export-links">{resources.filter((name) => available.includes(name.toLowerCase())).map((name) => <a className="secondary-button" href={localApi.exportUrl(name)} key={name}><DownloadIcon /> {downloadScope === "filtered" && name === "Devices" ? "Filtered Devices" : name}</a>)}{available.includes("assignments") && <a className="secondary-button" href={localApi.exportUrl("assignments")}><DownloadIcon /> {downloadScope === "filtered" ? "Filtered user-device assignments" : "User-device assignments"}</a>}{available.includes("summary") && <a className="secondary-button" href={localApi.exportUrl("summary")}><DownloadIcon /> Dashboard summary</a>}</div> : <button type="button" className="primary-button" onClick={illustrativeCsv}>Export scoped CSV</button>}</article><article className="planning-intake"><ReaderIcon /><h3>Planning-source intake</h3><p><strong>BWC.pdf and seven planning-table photos received.</strong> Their scopes and dates differ, so the observed purchase, deployment, accessory, and cost totals remain separate from Axon operational metrics.</p><span className="source-state provisional">Needs validation before import</span></article></div></section>;
+  return <section className="data-page"><div className="page-heading"><div><p className="eyebrow">GOVERNANCE · {isLive ? "AXON DATA" : "ILLUSTRATIVE"}</p><h2>Reports & Exports</h2><p>Create a scoped readiness brief or export saved snapshot data without another Axon pull.</p></div></div><div className="report-scope-summary"><InfoCircledIcon /><div><strong>Report scope</strong><span>{isLive ? `${component} · ${dataModeLabel(liveData.mode)}` : "Illustrative national sample"} · {orgView} · {formatTimestamp(liveData.lastSyncAt)}</span></div></div><div className="report-grid"><article><TableIcon /><h3>Saved inventory and assignments</h3><p>Use the complete saved workspace, even after restarting. Filter records and export all matches with snapshot scope and provenance. These operational exports may contain personnel identifiers.</p><button type="button" className="primary-button" onClick={() => setPage("inventory")}>Export saved devices</button><button type="button" className="secondary-button" onClick={() => setPage("assignments")}>Export saved assignments</button></article><article><FileTextIcon /><h3>Geographic readiness brief</h3><p>Preview a landscape report containing scope, metrics, map, priority risks, calculation, and provenance before printing or saving as PDF.</p><button type="button" className="primary-button" onClick={() => setPage("report-preview")}>Preview PDF report</button></article><article><TableIcon /><h3>{isLive ? "Axon session exports" : "Current illustrative dataset"}</h3><p>{isLive ? available.length ? `Available CSV exports come from this session's ${downloadScope === "filtered" ? "filtered" : "stated"} pull. They may differ from a persisted full baseline.` : "No session-only export is available. Use saved inventory or assignment exports above; no additional pull is required for those." : "CSV export containing the stated illustrative dashboard scope."}</p>{isLive ? <div className="export-links">{resources.filter((name) => available.includes(name.toLowerCase())).map((name) => <a className="secondary-button" href={localApi.exportUrl(name)} key={name}><DownloadIcon /> {downloadScope === "filtered" && name === "Devices" ? "Filtered Devices" : name}</a>)}{available.includes("assignments") && <a className="secondary-button" href={localApi.exportUrl("assignments")}><DownloadIcon /> {downloadScope === "filtered" ? "Filtered user-device assignments" : "User-device assignments"}</a>}{available.includes("summary") && <a className="secondary-button" href={localApi.exportUrl("summary")}><DownloadIcon /> Dashboard summary</a>}</div> : <button type="button" className="primary-button" onClick={illustrativeCsv}>Export scoped CSV</button>}</article><article className="planning-intake"><ReaderIcon /><h3>Planning-source intake</h3><p><strong>BWC.pdf and seven planning-table photos received.</strong> Their scopes and dates differ, so the observed purchase, deployment, accessory, and cost totals remain separate from Axon operational metrics.</p><span className="source-state provisional">Needs validation before import</span></article></div></section>;
 }
 
 function ReportPreviewPage({ summary, component, orgView, isLive, liveData, setPage, showToast }) {
@@ -905,7 +906,7 @@ function GenericPage({ page, setPage, showToast, isLive, liveData, summary, comp
 }
 
 export function App() {
-  const [page, setPage] = useState("dashboard");
+  const [page, setPage] = useState("home");
   const [navCollapsed, setNavCollapsed] = useState(false);
   const [component, setComponent] = useState("All Components");
   const [inventoryFilters, setInventoryFilters] = useState({ ...emptyInventoryFilters });
@@ -1009,6 +1010,13 @@ export function App() {
   }
 
   const pageContent = useMemo(() => {
+    if (page === "home") return <TaskHome description="Check equipment, review location matches, or prepare a scoped report." tasks={[
+      {title:"Find a device or assignment",description:"Search saved devices and see who has each one.",action:"Find a device",onClick:()=>setPage("inventory"),primary:true},
+      {title:"Review location matches",description:"Connect observed locations and Device Homes to the right organizational area or physical site.",action:"Review matches",onClick:()=>setPage("crosswalk")},
+      {title:"Prepare a report",description:"View geographic summaries or export saved records with their stated scope.",action:"Open reports",onClick:()=>setPage("reports")},
+      {title:"Setup & rules",description:"Manage roles, Groups, location matches, and directory fields.",action:"Open setup",onClick:()=>setPage("crosswalk")}
+    ]}><section><h2>Continue your work</h2><p>Review saved users and their device assignments. To create accounts, use Provisioning Center.</p><button className="secondary-button" onClick={()=>setPage("assignments")}>View people & assignments</button></section><section><h2>Saved data</h2><p>{isLive ? dataModeLabel(liveData.mode) : "No Axon snapshot loaded · demo views available"}</p><p>{isLive ? liveData.lastSyncAt ? formatTimestamp(liveData.lastSyncAt) : "Open refresh details for individual resource times." : "Examples are illustrative, not agency records."}</p><button className="text-action" onClick={()=>setConnectionOpen(true)}>View refresh details</button><button className="text-action" onClick={()=>setPage("dashboard")}>View dashboard</button></section></TaskHome>;
+    if (page === "help") return <section className="data-page"><h2>Choose the right task</h2><p>People shows saved users and their device assignments. Devices searches the saved inventory. Locations opens the geographic view. Setup & rules manages shared mapping tables.</p><p>To add or update accounts, start Provisioning Center using Start-Provisioning-Prototype.cmd on Windows or its Python launcher on macOS. The applications share saved data but keep credentials separate.</p><button className="secondary-button" onClick={()=>setPage("home")}>Back to Home</button></section>;
     if (page === "dashboard") return <><PendingOverlayPanel data={liveData} /><Dashboard selectedTask={selectedTask} setSelectedTask={setSelectedTask} setPage={setPage} orgView={orgView} liveData={liveData} isLive={isLive} summary={summary} /></>;
     if (page === "crosswalk") return <CrosswalkPage setPage={setPage} showToast={setToast} rows={crosswalkRows} isLive={isLive} defaultReviewState="All states" backendAvailable={backendAvailable} onDirtyChange={setLocalWorkspaceDirty} />;
     if (page === "facilities") return <FacilitiesPage backendAvailable={backendAvailable} governanceSummary={governanceSummary} showToast={setToast} onDirtyChange={setLocalWorkspaceDirty} onSaved={refreshGovernanceSummary} />;
@@ -1018,5 +1026,19 @@ export function App() {
     return <GenericPage page={page} setPage={setPage} showToast={setToast} isLive={isLive} liveData={liveData} summary={summary} component={component} orgView={orgView} setOrgView={setOrgView} onOpenConnection={() => setConnectionOpen(true)} onExit={shutdownApplication} />;
   }, [page, selectedTask, orgView, liveData, isLive, summary, crosswalkRows, inventoryRows, assignmentRows, component, backendAvailable, governanceSummary, inventoryFilters, assignmentFilters]);
 
-  return <><a className="skip-link" href="#main-content">Skip to main content</a><div className={`app-shell ${navCollapsed ? "nav-collapsed" : ""}`}><Sidebar page={page} setPage={(next) => { if (["crosswalk", "facilities", "access", "access-groups"].includes(page) && localWorkspaceDirty && next !== page) { setToast("Save or reset unsaved local governance changes before leaving the workspace."); return; } setPage(next); }} exceptionCount={summary.inventoryExceptions} collapsed={navCollapsed} setCollapsed={setNavCollapsed} /><div className="app-workspace"><AppHeader page={page} component={component} setComponent={setComponent} orgView={orgView} setOrgView={setOrgView} isLive={isLive} dataMode={liveData.mode} session={session} backendAvailable={backendAvailable} onOpenConnection={() => setConnectionOpen(true)} /><SyncJobBanner job={syncJob} onOpen={() => setConnectionOpen(true)} onCancel={cancelSync} /><main id="main-content" className="page-content" tabIndex="-1">{pageContent}</main></div>{toast && <div className="toast" role="status"><CheckCircledIcon /><span>{toast}</span><button type="button" aria-label="Dismiss notification" onClick={() => setToast("")}><Cross2Icon /></button></div>}<ConnectionModal open={connectionOpen} backendAvailable={backendAvailable} config={config} session={session} syncJob={syncJob} onClose={() => setConnectionOpen(false)} onSave={saveConnection} onPull={pullLiveData} onClear={clearCredentials} /></div></>;
+  function navigate(next) {
+    if (localWorkspaceDirty && next !== page) { setToast("Save or discard unsaved local changes before leaving this task."); return; }
+    setPage(next); window.setTimeout(()=>document.getElementById("main-content")?.focus(),0);
+  }
+  const primaryPage = ["access","access-groups","assignments"].includes(page) ? "people" : page === "inventory" ? "devices" : ["map","facilities"].includes(page) ? "locations" : page === "report-preview" ? "reports" : page;
+  return <><a className="skip-link" href="#main-content">Skip to main content</a>
+    <TaskNavigation items={[["home","Home"],["people","People"],["devices","Devices"],["locations","Locations"],["reports","Reports"]]} current={primaryPage} onNavigate={key=>navigate({people:"assignments",devices:"inventory",locations:"map"}[key] || key)} help={()=>navigate("help")} />
+    <div className="task-secondary-nav" aria-label="Additional workspaces">{[["dashboard","Dashboard"],["exceptions","Issues needing attention"],["crosswalk","Setup & rules"],["facilities","Physical sites"],["access","Users & Groups"],["provenance","Data sources"],["settings","Settings"]].map(([key,label])=><button key={key} aria-current={page === key ? "page" : undefined} onClick={()=>navigate(key)}>{label}</button>)}</div>
+    <div className="app-shell task-shell"><div className="app-workspace">
+      {page !== "home" && <AppHeader page={page} component={component} setComponent={setComponent} orgView={orgView} setOrgView={setOrgView} isLive={isLive} dataMode={liveData.mode} session={session} lastSyncAt={liveData.lastSyncAt} backendAvailable={backendAvailable} onOpenConnection={()=>setConnectionOpen(true)} />}
+      <SyncJobBanner job={syncJob} onOpen={()=>setConnectionOpen(true)} onCancel={cancelSync}/>
+      <main id="main-content" className="page-content" tabIndex="-1">{pageContent}</main>
+      <footer className="prototype-footer">V3.2.0 · Python source prototype · Not a signed production desktop release</footer>
+    </div>{toast && <div className="toast" role="status"><InfoCircledIcon /><span>{toast}</span><button type="button" aria-label="Dismiss notification" onClick={()=>setToast("")}><Cross2Icon /></button></div>}
+    <ConnectionModal open={connectionOpen} backendAvailable={backendAvailable} config={config} session={session} syncJob={syncJob} onClose={()=>setConnectionOpen(false)} onSave={saveConnection} onPull={pullLiveData} onClear={clearCredentials} /></div></>;
 }

@@ -886,6 +886,22 @@ class BackendServerTests(unittest.TestCase):
             )
         self.assertEqual((self.crosswalk_root / "axon_group_crosswalk_starter.csv").read_bytes(), before)
 
+    def test_guided_personnel_match_uses_approved_status_and_stale_guard(self):
+        backend_server.initialize_governance_working_files()
+        backend_server.governance_workspace().migrate_governance_csvs(self.crosswalk_root)
+        original = backend_server.governance_workspace().governance_dataset("personnel_location_aor_crosswalk")["rows"][0]
+        payload = {"changes": {
+            "Personnel AOR": "TEST REVIEW AREA", "Review Status": "Approved",
+            "Reviewer": "Synthetic reviewer", "Review Notes": "Synthetic UI contract test",
+            "Reviewed At UTC": "2026-09-04T00:00:00Z",
+        }, "expected": original}
+        backend_server.update_crosswalk_row("personnel-aor", 1, payload)
+        saved = backend_server.governance_workspace().governance_dataset("personnel_location_aor_crosswalk")["rows"][0]
+        self.assertEqual(saved["Personnel AOR"], "TEST REVIEW AREA")
+        self.assertEqual(saved["Review Status"], "Approved")
+        with self.assertRaises(backend_server.CrosswalkConflictError):
+            backend_server.update_crosswalk_row("personnel-aor", 1, payload)
+
     def test_mapped_site_rows_require_observed_source_and_review_evidence(self):
         device_target = self.crosswalk_root / "device_home_crosswalk_starter.csv"
         device_before = device_target.read_bytes()

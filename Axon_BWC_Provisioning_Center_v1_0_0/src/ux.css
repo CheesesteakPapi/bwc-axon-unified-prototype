@@ -1,0 +1,43 @@
+main { max-width:1440px; margin:32px auto 48px; }
+.panel { border:0; border-radius:0; box-shadow:none; padding:20px 0; }
+.wide-panel { width:100%; max-width:none; margin:0; }
+.stepper { box-shadow:none; border-radius:4px; }
+.stepper button.active { background:#fff; color:#0057b8; }
+.primary { background:#0057b8; border-color:#0057b8; }
+.primary,.secondary,.danger-button { min-height:44px; }
+.skip-link { position:fixed; top:8px; left:8px; z-index:100; padding:12px; background:#071b38; color:white; transform:translateY(-160%); }
+.skip-link:focus { transform:none; }
+.people-search { display:grid; gap:8px; max-width:480px; padding-top:16px; font-weight:600; }
+.people-review-layout { display:grid; grid-template-columns:minmax(240px,1fr) minmax(0,2fr); gap:28px; margin-top:18px; }
+.people-list { border-right:1px solid #ccd6df; padding-right:22px; }
+.person-row { display:flex; align-items:center; border-bottom:1px solid #ccd6df; }
+.person-row.active { background:#edf4fc; border-left:3px solid #0057b8; }
+.person-row > input { width:18px; margin:12px; }
+.person-row button { display:grid; gap:5px; text-align:left; width:100%; min-width:0; padding:14px 8px; border:0; background:transparent; overflow-wrap:anywhere; color:#071b38; }
+.person-row button span,.person-row small { font-size:13px; }
+.person-editor { min-width:0; }
+.person-editor h3 { font-size:24px; margin:0 0 8px; }
+.person-editor p { overflow-wrap:anywhere; }
+.person-state { display:grid; gap:5px; padding:12px 0; border-block:1px solid #ccd6df; }
+.person-state span { color:#52657a; font-size:14px; }
+.person-editor details { margin:16px 0; }
+.person-editor summary { cursor:pointer; font-weight:600; padding:8px 0; }
+.person-editor dl > div { display:grid; grid-template-columns:130px minmax(0,1fr); gap:12px; border-bottom:1px solid #eee; padding:8px 0; }
+.person-editor dd { margin:0; overflow-wrap:anywhere; }
+.assignment-fields { border:0; padding:12px 0; margin:0; display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:18px; }
+.assignment-fields legend { font-weight:700; padding:8px 0; }
+.assignment-field label,.change-reason { display:grid; gap:6px; }
+.assignment-field .field-label { display:block; margin-bottom:6px; font-weight:600; }
+.assignment-field small { display:block; margin-top:6px; color:#52657a; overflow-wrap:anywhere; }
+.assignment-field label span,.change-reason span { font-size:14px; font-weight:600; }
+.people-pagination { display:flex; gap:10px; align-items:center; justify-content:space-between; padding-top:18px; }
+.people-pagination button { padding:8px; font-size:14px; }
+.approval-dock { margin:24px 0 0; padding:18px 0; box-shadow:none; gap:16px; }
+.bulk-bar { background:#f4f8fd; border-radius:4px; padding:16px; }
+.change-reason { flex:1; min-width:200px; max-width:420px; }.bulk-bar .change-reason input { width:100%; }
+.difference-list { grid-template-columns:1fr; }.difference-list p { grid-template-columns:100px minmax(0,1fr) minmax(0,1fr); overflow-wrap:anywhere; }
+.summary-cards { gap:12px; }.metric { border-radius:0; }
+.intake-grid-wrap { overflow-x:auto; }.intake-grid { min-width:650px; }
+.banner button { min-width:36px; }.prototype-footer,footer { background:white; border-top:1px solid #ccd6df; }
+@media(max-width:900px) { .people-review-layout { grid-template-columns:1fr; }.people-list { border-right:0; padding-right:0; max-height:320px; overflow:auto; }.summary-cards { grid-template-columns:repeat(3,minmax(0,1fr)); }.stepper { grid-template-columns:repeat(5,minmax(0,1fr)); }.stepper button { flex-direction:column; padding:10px 4px; font-size:12px; }.panel-heading { flex-direction:column; gap:12px; }.approval-dock { margin:24px 0 0; }.task-nav { gap:8px; } }
+@media(max-width:540px) { main { width:calc(100% - 32px); }.assignment-fields { grid-template-columns:1fr; }.summary-cards { grid-template-columns:repeat(2,minmax(0,1fr)); }.metric { padding:10px; }.bulk-bar input,.bulk-bar select { max-width:100%; }.approval-dock button { white-space:normal; }.person-editor dl > div { grid-template-columns:100px minmax(0,1fr); } }
