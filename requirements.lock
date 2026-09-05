@@ -1,2 +1,2 @@
-# V3.1.0 intentionally uses only the Python 3.11+ standard library.
+# V3.2.0 intentionally uses only the Python 3.11+ standard library.
 # No third-party runtime packages or unpinned downloads are required.

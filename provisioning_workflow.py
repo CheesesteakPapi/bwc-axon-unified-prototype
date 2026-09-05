@@ -476,6 +476,17 @@ def _approved_roles(workspace: SharedWorkspace) -> set[str]:
     return roles
 
 
+def role_options(workspace: SharedWorkspace) -> list[str]:
+    """Read-only picker values using the same approval policy as validation."""
+    approved = _approved_roles(workspace)
+    names = {}
+    for row in _dataset_rows(workspace, "approved_axon_role_catalog"):
+        role = _lookup_value(row, "Role Name", "Role")
+        if role.casefold() in approved:
+            names.setdefault(role.casefold(), role)
+    return sorted(names.values(), key=str.casefold)
+
+
 def resolve_group(workspace: SharedWorkspace, name: str, component: str, aor: str) -> tuple[dict[str, Any] | None, str]:
     matches = [item for item in _group_candidates(workspace) if item["name"].casefold() == name.casefold()]
     if not matches:

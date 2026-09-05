@@ -1,13 +1,13 @@
 {
   "name": "bwc-geographic-operations-v1-0-0",
-  "version": "1.0.0",
+  "version": "3.2.0",
   "private": true,
   "type": "module",
   "scripts": {
     "dev": "vite",
     "build": "vite build",
     "preview": "vite preview",
-    "test:ui": "node --test tests/sites-worker.test.mjs"
+    "test:ui": "node --test tests/*.test.mjs"
   },
   "dependencies": {
     "@vitejs/plugin-react": "5.0.4",

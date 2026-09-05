@@ -90,3 +90,8 @@ EXTERNAL_ID,MEMBERSHIP_TYPE,ENTITY_TYPE,ENTITY_ID
 User and Group files are UTF-8 without BOM. `EVIDENCE_GROUP_EXT_ID` remains blank. `SUPERVISOR_EMAIL` is sent; Supervisor UPN is retained for roster/review provenance and is not sent in the user import. `LOCATION` may be blank. Job Title and Job Category are not user-import columns. A selected Group display name is resolved to an exact external Group ID before generation; a blank or unresolved optional Group produces no Group relationship row while the eligible user row remains available.
 
 Maximum chunk size is 500 records. User chunks preserve intake order and must complete before Group chunks are unlocked.
+
+## V3.2.0 additive interface
+Authenticated loopback GET `/api/catalogs/roles` returns `{"roles": ["approved display name"]}`.
+Read-only; uses the same active/approved catalog predicate as provisioning validation. Preserves display casing and updates after workspace revisions. No tenant call, credentials or write permission is required.
+Personnel mapping continues to use the existing crosswalk row endpoint, `changes` plus `expected` prior values. The guided UI writes review status `Approved`, not `Reviewed`. Existing conflict responses and audit behavior are unchanged.

@@ -1,4 +1,4 @@
-:root { font-family: "Segoe UI", system-ui, sans-serif; color: #172638; background: #eef2f6; font-synthesis: none; }
+:root { font-family: "Segoe UI", system-ui, sans-serif; color: #071b38; background: #fff; font-synthesis: none; }
 * { box-sizing: border-box; }
 body { margin: 0; min-width: 320px; min-height: 100vh; }
 button, input, select { font: inherit; }
