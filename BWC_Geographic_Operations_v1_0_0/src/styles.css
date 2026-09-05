@@ -239,6 +239,9 @@ button:focus-visible, a:focus-visible, select:focus-visible, input:focus-visible
 .inventory-error { padding: 16px; border: 1px solid #b42318; color: #8a1c13; border-radius: 6px; background: #fff4f2; }
 .inventory-workspace table caption { text-align: left; padding: 12px; font-weight: 650; }
 .inventory-workspace .crosswalk-pagination { grid-template-columns: 1fr auto; }
+.assignment-detail { margin-top: 20px; padding: 16px; border: 1px solid var(--slate-300); border-radius: 8px; background: var(--slate-50); scroll-margin-top: 16px; }
+.assignment-detail h3 { margin: 0 0 8px; font-size: 22px; color: var(--navy-950); }
+.assignments-workspace td small { display: block; margin-top: 6px; color: var(--slate-600); overflow-wrap: anywhere; }
 @media (max-width: 680px) { .inventory-workspace .crosswalk-pagination { grid-template-columns: 1fr; } }
 .page-toolbar label:not(.search-control) { display: flex; flex-direction: column; gap: 5px; font-size: 11px; font-weight: 650; }.page-toolbar select { min-width: 170px; min-height: 44px; border: 1px solid var(--slate-300); background: #fff; border-radius: 4px; padding: 0 10px; }
 .search-control { min-height: 44px; min-width: 330px; display: flex; align-items: center; gap: 8px; padding: 0 12px; border: 1px solid var(--slate-300); border-radius: 5px; background: #fff; }.search-control input { width: 100%; border: 0; outline: 0; }.search-control svg { color: var(--slate-600); }

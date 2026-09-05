@@ -33,6 +33,9 @@ Revision-sensitive provisioning requests carry the expected run revision. Govern
 | `GET` | `/api/live/dashboard` | Confirmed full baseline, or an explicitly labeled filtered/partial view, plus separate pending/projected summaries |
 | `GET` | `/api/inventory` | Feature branch: filter and page every device in the saved full baseline or explicitly scoped filtered fallback |
 | `GET` | `/api/inventory/export` | Feature branch: export all matching devices with snapshot/filter provenance and a required current `expectedRevision` |
+| `GET` | `/api/assignments` | Feature branch: search and page the saved Users snapshot by role and scoped device count |
+| `GET` | `/api/assignments/devices` | Feature branch: page exact device records for one unique `userId`; requires current `expectedRevision` |
+| `GET` | `/api/assignments/export` | Feature branch: export all matching user assignment summaries with Users/Devices provenance; requires current `expectedRevision` |
 | `GET` | `/api/workspace/pending-users` | Pending user overlays and status filters |
 | `POST` | `/api/live/sync` | Start a resource-scoped, leased, read-only Axon refresh |
 | `GET` | `/api/live/sync/{jobId}` | Refresh progress and counts |

@@ -16,11 +16,17 @@ This backlog follows the supplied UX evaluation and the later provisioning corre
 
 Verification uses 605 synthetic devices, combined filters, page 11, full matching exports, scope selection, restart, revision conflicts, concurrent governance edits, CSV injection protection, and authenticated HTTP routes. Browser checks cover navigation persistence, combined filters, paging, export confirmation, and empty results. See `FEATURE_QA.md` for actual results and limits.
 
-## 2. Assignment investigation — next
+## 2. Assignment investigation — implemented
 
-Support full-snapshot paging; filters for role and zero, one, two, and three-or-more assigned devices; drill down from a user to exact serial numbers and disposition. Keep one Axon Role per user, allow multiple devices, and preserve unavailable counts when Devices are absent. An unusual count should become an exception only when a governed role expectation exists.
+- Search and page every user in the saved Users snapshot; combine role and zero, one, two, three-or-more, or unavailable device-count filters.
+- Open exact serial numbers, disposition, Device Home, and reviewed geographic mappings using a unique Axon User ID. Missing or duplicate IDs do not produce inferred links or misleading zero counts.
+- Preserve filters/page during navigation and return keyboard focus to the selected user's button after closing details.
+- Export all matching user assignment summaries, including separate Users/Devices snapshot provenance and an explicit full, filtered, or unavailable Devices scope.
+- Reuse saved snapshots after restart without another API request. Stale drilldowns and exports require a reload.
 
-## 3. Record-level exception queue — planned
+One Axon Role per user and multiple devices remain supported. An unusual count alone does not establish an exception. Pending provisioning edits are not included in these confirmed-snapshot counts; device geography never changes organizational Group assignment.
+
+## 3. Record-level exception queue — next
 
 Add actionable records for lost/relinquished-but-assigned devices, unmapped Device Homes, and unclassified Groups. Include reason, source snapshot, next action, and governed local review history. Dashboard cards should open the appropriate filtered queue. Persist review ownership/status with revision protection; do not mark an Axon condition resolved just because it was locally acknowledged.
 

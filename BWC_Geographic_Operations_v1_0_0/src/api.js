@@ -11,12 +11,25 @@ async function request(path, options = {}) {
   return payload;
 }
 
+async function downloadSavedView(path, query) {
+  const response = await fetch(`${path}?${new URLSearchParams(query)}`, { cache: "no-store" });
+  if (!response.ok) {
+    const payload = await response.json().catch(() => ({}));
+    throw new Error(payload.error || "Export failed. Reload saved data and try again.");
+  }
+  const filename = response.headers.get("Content-Disposition")?.match(/filename="([^"]+)"/)?.[1] || "BWC_review.csv";
+  return { blob: await response.blob(), filename };
+}
+
 export const localApi = {
   health: () => request("/api/health"),
   session: () => request("/api/session"),
   config: () => request("/api/config"),
   dashboard: () => request("/api/live/dashboard"),
   inventory: (query, signal) => request(`/api/inventory?${new URLSearchParams(query)}`, { signal }),
+  assignments: (query, signal) => request(`/api/assignments?${new URLSearchParams(query)}`, { signal }),
+  assignmentDevices: (query, signal) => request(`/api/assignments/devices?${new URLSearchParams(query)}`, { signal }),
+  exportAssignments: (query) => downloadSavedView("/api/assignments/export", query),
   exportInventory: async (query) => {
     const response = await fetch(`/api/inventory/export?${new URLSearchParams(query)}`, { cache: "no-store" });
     if (!response.ok) {

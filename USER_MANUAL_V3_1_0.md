@@ -38,6 +38,17 @@ Confirmed metrics reflect active Axon snapshots only. Pending cards and the Base
 
 This CSV is for inventory review. The Provisioning Center generates its own strict import records. Geographic component/AOR filters use reviewed Device Home mappings and do not infer a user's organizational assignment.
 
+### Investigate device assignments (feature branch)
+
+1. Open **Device Assignments**. A saved Users snapshot is required; a Devices snapshot supplies assignment counts. Neither viewing nor exporting reconnects to Axon.
+2. Combine **Axon Role**, **Assigned device count**, and search. **Next** and **Previous** page through all matching users, not just the first 500. Filters remain selected when you navigate away and return.
+3. Select **View devices** for a user to see exact serial numbers, model, disposition, Device Home, and reviewed device geography. Matching uses the unique Axon User ID, never a similar name. Missing or duplicate IDs are labeled for review without inferred assignments.
+4. Check the scope and separate Users/Devices timestamps. A filtered Devices snapshot counts only devices within its filters. **Unavailable** is not zero. An unusual count does not automatically mean an exception.
+5. Select **Export matching assignments** for one CSV containing every matching user across all pages. This is a summary with counts, models, states, filters, revision, and both snapshot identities/hashes/times. Use Inventory export when individual device serial records are needed.
+6. If shared data changes, use **Reload saved data**, review the results, then reopen details or export. **Close device details** returns keyboard focus to the user's button.
+
+These read-only counts exclude pending provisioning changes. Device location cannot change a user's organizational Group. Exports may contain personnel information; store them only in an approved location. They are not provisioning import files.
+
 ### Export a provisioning run
 
 Export creates one timestamped run ZIP for review. Do not upload it back into the same workflow. Store it only in an approved location because it can contain normalized personnel data.

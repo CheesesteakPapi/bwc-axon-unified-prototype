@@ -38,6 +38,7 @@ if str(SUITE_ROOT) not in sys.path:
 
 from shared_workspace import RefreshLeaseConflict, RevisionConflict, SharedWorkspace
 from inventory_views import FILTER_FIELDS, filter_inventory, inventory_csv, parse_inventory_query
+from assignment_views import assignment_csv, filter_assignments, parse_assignment_query
 
 from audit_store import append_event, verify_chain
 from axon_sync import (
@@ -1193,6 +1194,7 @@ def build_dashboard_payload(
     *,
     mode: str = "live",
     inventory_limit: int | None = 500,
+    assignment_limit: int | None = 500,
 ) -> dict[str, Any]:
     devices = rows.get("Devices", [])
     users = rows.get("Users", [])
@@ -1259,6 +1261,7 @@ def build_dashboard_payload(
             "disposition": disposition,
             "assignmentState": assignment_state,
             "assignedUser": str(device.get("Assigned User Name") or owner_id),
+            "assignedUserId": owner_id,
             "deviceHome": str(device.get("Device Home Name (API)") or ""),
             "mappedSiteId": mapped_site,
             "component": component,
@@ -1269,8 +1272,11 @@ def build_dashboard_payload(
         })
 
     assignments: list[dict[str, Any]] = []
+    user_id_counts = Counter(str(user.get("Axon User ID") or "").strip() for user in users)
     for user in users:
         user_id = str(user.get("Axon User ID") or "").strip()
+        identity_status = "Exact Axon User ID" if user_id and user_id_counts[user_id] == 1 else "Missing or duplicate Axon User ID"
+        counts_available = devices_available and identity_status == "Exact Axon User ID"
         assigned = assigned_by_user.get(user_id, [])
         display_name = " ".join(
             part for part in [str(user.get("First Name") or "").strip(), str(user.get("Last Name") or "").strip()] if part
@@ -1280,6 +1286,7 @@ def build_dashboard_payload(
         role = str(user.get("Role") or "").strip()
         assignments.append({
             "userId": user_id,
+            "identityStatus": identity_status,
             "displayName": display_name,
             "externalId": str(user.get("External ID") or ""),
             "role": role,
@@ -1290,13 +1297,13 @@ def build_dashboard_payload(
             "additionalGroupCount": 0,
             "groupDataStatus": "Not observed in the current Users pull contract",
             "userStatus": str(user.get("User Status") or ""),
-            "deviceCount": len(assigned) if mode != "partial" else None,
+            "deviceCount": len(assigned) if counts_available else None,
             "deviceModels": (
                 "; ".join(models) or "—"
-                if mode != "partial"
-                else "Full Devices baseline required"
+                if counts_available
+                else "Unavailable"
             ),
-            "deviceStates": counter_text(states) if mode != "partial" else "Unavailable",
+            "deviceStates": counter_text(states) if counts_available else "Unavailable",
         })
 
     observed_home_keys = {
@@ -1401,7 +1408,7 @@ def build_dashboard_payload(
         },
         "componentSummaries": component_summaries,
         "inventory": inventory[:inventory_limit] if inventory_limit is not None else inventory,
-        "assignments": assignments[:500],
+        "assignments": assignments[:assignment_limit] if assignment_limit is not None else assignments,
         "crosswalkReview": crosswalk_review[:500],
         "groups": [
             {
@@ -1676,6 +1683,56 @@ class SessionState:
             context["content"] = inventory_csv(matched, context)
             timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
             context["filename"] = f"BWC_inventory_{context['mode']}_R{revision}_{timestamp}.csv"
+        return context
+
+    def assignment_view(self, query: dict[str, list[str]], *, detail=False, export=False) -> dict[str, Any]:
+        try:
+            options = parse_assignment_query(query, detail=detail, export=export)
+        except ValueError as exc:
+            raise UserInputError(str(exc)) from exc
+        view = self.workspace.read_operational_view()
+        revision = view["workspaceRevision"]
+        if options["expectedRevision"] is not None and options["expectedRevision"] != revision:
+            raise RevisionConflict("The shared data changed. Reload assignments before continuing.")
+        rows, activated_at, scopes, mode = self._dashboard_source(view)
+        snapshots = {item["resource"]: {key: value for key, value in item.items() if key != "rows"}
+                     for item in view["snapshots"] if item["scope"] == scopes.get(item["resource"])}
+        user_snapshot, device_snapshot = snapshots.get("Users"), snapshots.get("Devices")
+        payload = build_dashboard_payload(rows, activated_at, {}, list(rows), mode=mode,
+                                          inventory_limit=None if detail else 0, assignment_limit=None) if user_snapshot else {}
+        assignments = payload.get("assignments", [])
+        context = {
+            "workspaceRevision": revision, "userSnapshot": user_snapshot, "deviceSnapshot": device_snapshot,
+            "deviceScope": device_snapshot["scope"]["type"] if device_snapshot else "unavailable",
+            "scopeTotal": len(assignments) if user_snapshot else None,
+            "roles": sorted({row["role"] for row in assignments if row["role"]}, key=str.casefold),
+            "filters": options["filters"],
+        }
+        if detail:
+            selected = [row for row in assignments if row["userId"] == options["userId"]]
+            if len(selected) != 1 or selected[0]["identityStatus"] != "Exact Axon User ID":
+                raise UserInputError("This user cannot be resolved to one exact Axon User ID in the saved Users snapshot.")
+            context["user"] = selected[0]
+            matched = sorted((device for device in payload["inventory"] if device["assignedUserId"] == options["userId"]),
+                             key=lambda device: (device["serialNumber"].casefold(), device["deviceId"]))
+        else:
+            matched = filter_assignments(assignments, options["filters"])
+        total_pages = max(1, (len(matched) + options["pageSize"] - 1) // options["pageSize"])
+        page = min(options["page"], total_pages)
+        start = (page - 1) * options["pageSize"]
+        context.update({"rows": matched[start:start + options["pageSize"]], "total": len(matched),
+                        "page": page, "pageSize": options["pageSize"], "totalPages": total_pages})
+        if detail and device_snapshot is None:
+            context["total"] = None
+        if self.workspace.revision() != revision:
+            raise RevisionConflict("The shared data changed while assignments were loading. Reload this view.")
+        if export:
+            if user_snapshot is None:
+                raise UserInputError("Complete a Users refresh before exporting assignments.")
+            context["exportedAt"] = utc_now_iso()
+            context["content"] = assignment_csv(matched, context)
+            timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
+            context["filename"] = f"BWC_assignments_{context['deviceScope']}_R{revision}_{timestamp}.csv"
         return context
 
     def job(self, job_id: str) -> dict[str, Any] | None:
@@ -2080,10 +2137,12 @@ class LocalAxonGeographicHandler(BaseHTTPRequestHandler):
         if path == "/api/live/dashboard":
             self._send_json(HTTPStatus.OK, {"success": True, **self.state.dashboard()})
             return
-        if path in {"/api/inventory", "/api/inventory/export"}:
+        if path in {"/api/inventory", "/api/inventory/export", "/api/assignments", "/api/assignments/export", "/api/assignments/devices"}:
             try:
                 export = path.endswith("/export")
-                payload = self.state.inventory_view(parse_qs(parsed.query, keep_blank_values=True), export=export)
+                query = parse_qs(parsed.query, keep_blank_values=True)
+                payload = (self.state.assignment_view(query, detail=path.endswith("/devices"), export=export)
+                           if path.startswith("/api/assignments") else self.state.inventory_view(query, export=export))
                 if export:
                     self.send_response(HTTPStatus.OK)
                     self.send_header("Content-Type", "text/csv; charset=utf-8")
@@ -2100,7 +2159,7 @@ class LocalAxonGeographicHandler(BaseHTTPRequestHandler):
             except UserInputError as exc:
                 self._error(HTTPStatus.BAD_REQUEST, str(exc))
             except Exception:
-                self._error(HTTPStatus.INTERNAL_SERVER_ERROR, "Unable to read saved inventory. Reload and try again.")
+                self._error(HTTPStatus.INTERNAL_SERVER_ERROR, "Unable to read saved records. Reload and try again.")
             return
         if path == "/api/workspace/status":
             self._send_json(HTTPStatus.OK, {"success": True, **self.state.workspace.status()})

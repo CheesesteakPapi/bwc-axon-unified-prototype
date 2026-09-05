@@ -32,6 +32,7 @@ import {
 import { localApi } from "./api.js";
 import { InventoryWorkspace } from "./InventoryWorkspace.jsx";
 import { emptyInventoryFilters } from "./inventoryView.js";
+import { AssignmentWorkspace, emptyAssignmentFilters } from "./AssignmentWorkspace.jsx";
 
 const navGroups = [
   { label: "MONITOR", items: [["dashboard", "Dashboard", HomeIcon], ["map", "Map", DrawingPinIcon], ["exceptions", "Exceptions", ExclamationTriangleIcon]] },
@@ -908,6 +909,7 @@ export function App() {
   const [navCollapsed, setNavCollapsed] = useState(false);
   const [component, setComponent] = useState("All Components");
   const [inventoryFilters, setInventoryFilters] = useState({ ...emptyInventoryFilters });
+  const [assignmentFilters, setAssignmentFilters] = useState({ ...emptyAssignmentFilters });
   const [orgView, setOrgView] = useState(() => window.localStorage.getItem("bwc-default-organizational-view") || "HSI Domestic AORs");
   const [connectionOpen, setConnectionOpen] = useState(false);
   const [selectedTask, setSelectedTask] = useState("mapping");
@@ -1012,9 +1014,9 @@ export function App() {
     if (page === "facilities") return <FacilitiesPage backendAvailable={backendAvailable} governanceSummary={governanceSummary} showToast={setToast} onDirtyChange={setLocalWorkspaceDirty} onSaved={refreshGovernanceSummary} />;
     if (page === "access" || page === "access-groups") return <UsersAccessPage rows={assignmentRows} isLive={isLive} backendAvailable={backendAvailable} governanceSummary={governanceSummary} showToast={setToast} onDirtyChange={setLocalWorkspaceDirty} onSaved={refreshGovernanceSummary} initialWorkspace={page === "access-groups" ? "group-master" : "users"} />;
     if (page === "inventory") return <InventoryWorkspace filters={inventoryFilters} setFilters={setInventoryFilters} component={component} setComponent={setComponent} isLive={isLive} liveData={liveData} demoRows={illustrativeInventory} showToast={setToast} />;
-    if (page === "assignments") return <DataTablePage type={page} rows={assignmentRows} isLive={isLive} hasDeviceScope={liveData.resources?.includes("Devices")} downloadAvailable={(liveData.availableDownloads || []).includes("assignments")} downloadScope={liveData.downloadScope?.deviceScope} showToast={setToast} />;
+    if (page === "assignments") return <AssignmentWorkspace filters={assignmentFilters} setFilters={setAssignmentFilters} isLive={isLive} liveData={liveData} showToast={setToast} />;
     return <GenericPage page={page} setPage={setPage} showToast={setToast} isLive={isLive} liveData={liveData} summary={summary} component={component} orgView={orgView} setOrgView={setOrgView} onOpenConnection={() => setConnectionOpen(true)} onExit={shutdownApplication} />;
-  }, [page, selectedTask, orgView, liveData, isLive, summary, crosswalkRows, inventoryRows, assignmentRows, component, backendAvailable, governanceSummary, inventoryFilters]);
+  }, [page, selectedTask, orgView, liveData, isLive, summary, crosswalkRows, inventoryRows, assignmentRows, component, backendAvailable, governanceSummary, inventoryFilters, assignmentFilters]);
 
   return <><a className="skip-link" href="#main-content">Skip to main content</a><div className={`app-shell ${navCollapsed ? "nav-collapsed" : ""}`}><Sidebar page={page} setPage={(next) => { if (["crosswalk", "facilities", "access", "access-groups"].includes(page) && localWorkspaceDirty && next !== page) { setToast("Save or reset unsaved local governance changes before leaving the workspace."); return; } setPage(next); }} exceptionCount={summary.inventoryExceptions} collapsed={navCollapsed} setCollapsed={setNavCollapsed} /><div className="app-workspace"><AppHeader page={page} component={component} setComponent={setComponent} orgView={orgView} setOrgView={setOrgView} isLive={isLive} dataMode={liveData.mode} session={session} backendAvailable={backendAvailable} onOpenConnection={() => setConnectionOpen(true)} /><SyncJobBanner job={syncJob} onOpen={() => setConnectionOpen(true)} onCancel={cancelSync} /><main id="main-content" className="page-content" tabIndex="-1">{pageContent}</main></div>{toast && <div className="toast" role="status"><CheckCircledIcon /><span>{toast}</span><button type="button" aria-label="Dismiss notification" onClick={() => setToast("")}><Cross2Icon /></button></div>}<ConnectionModal open={connectionOpen} backendAvailable={backendAvailable} config={config} session={session} syncJob={syncJob} onClose={() => setConnectionOpen(false)} onSave={saveConnection} onPull={pullLiveData} onClear={clearCredentials} /></div></>;
 }

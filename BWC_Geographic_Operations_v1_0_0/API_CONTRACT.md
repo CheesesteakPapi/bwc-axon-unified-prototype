@@ -28,6 +28,9 @@ The browser connects only to the packaged backend on `127.0.0.1`.
 | `/api/live/dashboard` | `GET` | Confirmed full baseline or explicitly labeled filtered/partial payload read with its matching workspace revision, snapshot metadata, and pending overlays in one SQLite transaction |
 | `/api/inventory` | `GET` | Full saved inventory filtering, facets, counts, and paging beyond the 500-row dashboard preview |
 | `/api/inventory/export` | `GET` | CSV of all matching saved devices, requiring the viewed `expectedRevision` |
+| `/api/assignments` | `GET` | Full saved Users filtering by search, role, and scoped device count with paging |
+| `/api/assignments/devices` | `GET` | Exact unique User ID drilldown to device records; requires the viewed `expectedRevision` |
+| `/api/assignments/export` | `GET` | CSV of every matching user assignment summary; requires the viewed `expectedRevision` |
 | `/api/live/export/{resource}` | `GET` | Download a temporary current-session export |
 | `/api/governance/summary` | `GET` | Read local facility, office, Group, and relationship totals |
 | `/api/crosswalks/{key}` | `GET` | Search and page one allowlisted local table |
@@ -42,6 +45,12 @@ Live-job responses include `status`, `phase`, `resources`, `completedResources`,
 ## Local governed-table contract
 
 Inventory query keys are `search`, `model`, `disposition`, `assignmentState`, `deviceHome`, `component`, `regionAor`, `exceptionsOnly`, `page`, `pageSize`, and `expectedRevision`. Selection filters use exact values from returned facets; search is case-insensitive. Filters combine with AND. Page size is 1–200 (default 50). Duplicate or unsupported keys return 400. The response includes full/filtered/unavailable `mode`, `deviceSnapshot`, `workspaceRevision`, `filters`, `scopeTotal`, `total`, `page`, `totalPages`, and `rows`. No Devices snapshot yields unavailable scope and a null scope count.
+
+Assignment list/export query keys are `search`, `role`, `deviceCount`, `page`, `pageSize`, and `expectedRevision`. Role is exact; search is case-insensitive across names, IDs, role, models, and states. Device count accepts blank, `0`, `1`, `2`, `3+`, or `unavailable` (URL-encode plus as `%2B`). Filters combine with AND. Paging defaults to 50 and permits 1–200. Unsupported/duplicate keys or invalid values return 400. Responses include `userSnapshot`, `deviceSnapshot`, `deviceScope`, `workspaceRevision`, `roles`, `filters`, `scopeTotal`, `total`, paging, and `rows`.
+
+Assignment device drilldowns accept only `userId`, `expectedRevision`, `page`, and `pageSize`. The unique, nonblank Axon User ID must exist in Users; missing/duplicate identities return 400 and have unavailable counts in the list. Device joins never use display names. The result includes the selected `user` and exact device rows, including `assignedUserId`. Missing Devices produces a null detail total, not zero.
+
+Assignment exports and drilldowns require the viewed revision (missing: 400; stale or concurrent workspace changes: 409). Exports are formula-safe UTF-8 without BOM, one row per matching user across all pages, with both snapshot IDs/hashes/timestamps, scope/filter context, workspace revision, and export UTC. No Users snapshot prevents export; a valid empty Users snapshot or zero matches produces headers only. Full Devices is preferred over filtered fallback. Filtered counts never describe all devices. Users-only views expose roles but counts remain unavailable. Both resources are read from one saved workspace view without credentials or Axon calls; pending overlays are excluded.
 
 Inventory export uses the same filter selection over every matching row, regardless of page. It generates UTF-8 without BOM with formula-safe cells and per-row scope, snapshot identity/hash/time, workspace revision, filters, and export UTC. An absent expected revision returns 400; a stale revision or concurrent governance/snapshot change returns 409. A full Devices baseline is preferred over newer filtered scopes; when no full baseline exists the filtered snapshot is explicitly identified. Both routes read locally persisted snapshots without credentials or Axon calls. Temporary session exports at `/api/live/export/*` retain their existing behavior.
 
