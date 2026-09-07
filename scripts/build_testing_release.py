@@ -39,7 +39,7 @@ def main():
         contents.append((archive_name, data, relative.endswith(".command")))
     stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     manifest = {
-        "version": "3.2.0", "createdAtUTC": stamp,
+        "version": "3.2.1", "createdAtUTC": stamp,
         "classification": "Prototype source execution; not a signed production desktop release",
         "baseCommit": subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=ROOT, text=True).strip(),
         "branch": subprocess.check_output(["git", "branch", "--show-current"], cwd=ROOT, text=True).strip(),
@@ -48,7 +48,7 @@ def main():
         "maximumMemberPathLength": max(len(name) for name, _, _ in contents),
     }
     destination.mkdir(parents=True, exist_ok=True)
-    output = destination / f"BWC32_V3_2_0_{stamp}.zip"
+    output = destination / f"BWC32_V3_2_1_{stamp}.zip"
     with zipfile.ZipFile(output, "x", compression=zipfile.ZIP_DEFLATED) as archive:
         for name, data, executable in contents:
             entry = zipfile.ZipInfo(name)

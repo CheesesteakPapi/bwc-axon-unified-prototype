@@ -1,7 +1,46 @@
-# BWC Axon Unified Prototype V3.2.0
+# BWC Axon Unified Prototype V3.2.1 — testing candidate
+
+Optional testing convenience: run `Configure-Test-Credentials.cmd` on Windows,
+or `bash Configure-Test-Credentials-macOS.command` on macOS, to save a private
+**plaintext** local Axon test profile outside the source package and `.venv`.
+Both normal source launchers load it on startup; no automatic API request or
+approval occurs. See [LOCAL_TEST_CREDENTIALS.md](LOCAL_TEST_CREDENTIALS.md) for
+setup, safeguards, rotation and removal. Entra delegated tokens remain separate.
+
+## Bulk review
+
+- Geographic Operations: **Review → Review mode → Bulk review: [mapping table]**.
+  Bulk controls also appear in the full governance table under Setup & rules.
+- Provisioning: **People → Review Exceptions** or **Preview Changes**.
+  Filter by blocked, warnings, or ready; search by name, email, role, or issue.
+- Select individual records, **Select this page**, or **Select all matching**.
+  All matching includes other pages (maximum 1,500 records). Changing a user
+  search/filter clears selection; crosswalk page changes clear page selections.
+- Expand **Bulk update**, choose one or more shared fields, and add a reason.
+  **Preview bulk changes** lists before/after values and no-op counts. Page through
+  the preview, then **Confirm N record updates**. Nothing saves before confirmation.
+- Source identities cannot be bulk-edited. Crosswalk batches validate and commit
+  atomically; stale revisions or invalid relationships save nothing. Review notes
+  are appended, not replaced. New source relationships use single-source review.
+- User batches regenerate validation and import records, clear old approval, and
+  return to Preview or Review Exceptions. Existing blockers remain visible.
+  No bulk action approves a run or submits to Axon.
+
+The known-location mapping workbook is a separate local collection artifact, not
+part of this repository. Its dropdowns reflect saved reference lists, not live
+snapshot refreshes. A one-click reviewed workbook import is not implemented; do
+not replace the database or runtime CSVs with a completed template.
 
 > **Prototype — Python/PowerShell source execution**
 > **Not a signed production desktop release**
+
+V3.2.1 is a local source testing candidate, not a published or repackaged release.
+It adds stricter submission reconciliation, renewable refresh ownership, one-tenant
+workspace binding, per-resource freshness, a focused Review workspace, inline
+relationship creation, explicit device scopes, and privacy-safe local diagnostics.
+Read [FORGEFLOW_REVIEW_V3_2_1.md](FORGEFLOW_REVIEW_V3_2_1.md) for verification,
+remaining acceptance gates, and safe upgrade instructions. Existing V3.2.0 release
+archives and operational data are unchanged.
 
 V3.2.0 combines Provisioning Center and Geographic Operations around one authoritative, per-user SQLite workspace. Operators can paste or upload a minimal roster, enrich it, resolve exceptions, edit assignments in Preview, approve existing-account changes, submit deliberately, and track jobs without downloading and re-uploading intermediate files.
 

@@ -89,6 +89,9 @@ def main() -> int:
     for path in files:
         relative = path.relative_to(ROOT).as_posix()
         lowered = relative.lower()
+        if lowered.endswith(".local.json") or "/credentials/" in "/" + lowered:
+            findings.append(f"{relative}: local credential files cannot be published")
+            continue
         if path.suffix.lower() in FORBIDDEN_SUFFIXES:
             findings.append(f"{relative}: prohibited file type")
             continue

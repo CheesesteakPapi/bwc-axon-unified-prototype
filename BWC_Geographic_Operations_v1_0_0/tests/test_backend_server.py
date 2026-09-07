@@ -125,6 +125,30 @@ class BackendServerTests(unittest.TestCase):
         self.audit_env.stop()
         self.temp.cleanup()
 
+    def test_local_profile_load_is_private_and_does_not_refresh(self):
+        from local_test_credentials import credential_path, write_profile, TestCredentialError
+        profile = {"version": 1, "testingOnly": True, "agencyBaseUrl": "https://test-agency.evidence.com",
+                   "partnerId": "SYNTHETIC-PARTNER", "clientId": "synthetic-client", "clientSecret": "synthetic-file-secret"}
+        with patch.dict(os.environ, {"BWC_TEST_CREDENTIALS_FILE": ""}):
+            write_profile(credential_path(), profile)
+            state = backend_server.SessionState(client_factory=FakeAxonClient)
+            try:
+                revision = state.workspace.revision()
+                state.load_test_credentials(profile["agencyBaseUrl"])
+                self.assertTrue(state.session_status()["testCredentialsLoaded"])
+                self.assertEqual(revision, state.workspace.revision())
+                self.assertEqual(FakeAxonClient.instances, [])
+                self.assertNotIn("synthetic-file-secret", json.dumps(state.session_status()))
+                with patch.object(backend_server, "load_config", return_value=({"agency_base_url": "https://other.example.test"}, True)):
+                    with self.assertRaises(TestCredentialError):
+                        state.start_sync({"resources": ["Users"]})
+                state.clear_credentials()
+                self.assertFalse(state.session_status()["configured"])
+                self.assertFalse(state.session_status()["testCredentialsLoaded"])
+                self.assertTrue(credential_path().exists())
+            finally:
+                state.close()
+
     def test_public_config_never_contains_credentials(self):
         saved = backend_server.save_public_config({
             "agencyBaseUrl": "https://test-agency.evidence.com/",
@@ -136,6 +160,100 @@ class BackendServerTests(unittest.TestCase):
         self.assertFalse(saved["rawJsonEnabled"])
         self.assertNotIn("clientSecret", stored)
         self.assertNotIn("must-not-save", self.config_path.read_text(encoding="utf-8"))
+
+    def test_tracked_models_persist_without_credentials(self):
+        self.assertEqual(backend_server.public_config()["deviceModel"].split(","), [
+            "axon_body_4_dock_8_bay", "axon_body_4_dock_1_bay", "taser_etm_flex_2",
+            "axon_body_cam_4", "taser_body_cam_3", "taser_cew_10_handle",
+        ])
+        value = backend_server.save_public_config({
+            "agencyBaseUrl": "https://test-agency.evidence.com",
+            "deviceModel": "Synthetic A,Synthetic B",
+        })
+        self.assertEqual(value["deviceModel"], "Synthetic A,Synthetic B")
+        self.assertEqual(backend_server.public_config()["deviceModel"], value["deviceModel"])
+        with self.assertRaises(backend_server.UserInputError):
+            backend_server.save_public_config({
+                "agencyBaseUrl": "https://test-agency.evidence.com",
+                "deviceModel": ",".join(str(n) for n in range(26)),
+            })
+
+    def test_all_local_tables_load_independently(self):
+        backend_server.initialize_governance_working_files()
+        for key in backend_server.CROSSWALK_SPECS:
+            with self.subTest(table=key):
+                payload = backend_server.list_crosswalk(key)
+                self.assertTrue(payload["columns"])
+                self.assertTrue(payload["editableFields"])
+
+    def test_review_targets_are_explicit_and_preserve_partial_records(self):
+        initial = backend_server.review_targets("device-homes", "synthetic home")
+        self.assertFalse(initial["matches"])
+        self.assertGreater(len(initial["targets"]), 0)
+        target = initial["targets"][0]
+        backend_server.update_crosswalk_row("device-homes", target["rowNumber"], {
+            "changes": {"Device Home Name (API)": "Partial observed name"},
+            "expected": target["values"],
+        })
+        vacant = backend_server.review_targets("device-homes", "synthetic home")
+        self.assertNotIn(target["rowNumber"], [r["rowNumber"] for r in vacant["targets"]])
+        backend_server.update_crosswalk_row("device-homes", target["rowNumber"], {
+            "changes": {"Normalized Device Home Key": "synthetic home"},
+        })
+        exact = backend_server.review_targets("device-homes", " SYNTHETIC HOME ")
+        self.assertEqual([r["rowNumber"] for r in exact["matches"]], [target["rowNumber"]])
+        self.assertEqual(exact["targets"], exact["matches"])
+        non_site = backend_server.review_targets("non-site-groups", "synthetic group")
+        self.assertTrue(non_site["allowCreate"])
+        self.assertFalse(non_site["targets"])
+        with self.assertRaises(backend_server.UserInputError):
+            backend_server.review_targets("directory-attributes", "mail")
+
+    def test_inline_relationship_creates_additional_site_link_and_rejects_stale_revision(self):
+        targets = backend_server.review_targets("device-homes", "test new home")
+        target = targets["sites"][0]
+        body = {"key": "device-homes", "targetRowNumber": target["rowNumber"], "expectedRevision": targets["revision"],
+                "values": {"Device Home Name (API)": "Test New Home", "Normalized Device Home Key": "test new home",
+                           "Mapping Status": "Mapped", "Mapping Method": "Manual exception", "Confidence": "High",
+                           "Review Notes": "TEST explicitly selected existing site."}}
+        result = backend_server.create_review_relationship(body)
+        self.assertTrue(result["success"])
+        current = backend_server.review_targets("device-homes", "test new home")
+        self.assertEqual(len(current["matches"]), 1)
+        self.assertEqual(current["matches"][0]["values"]["Site ID"], target["values"]["Site ID"])
+        with self.assertRaises(backend_server.CrosswalkConflictError):
+            backend_server.create_review_relationship(body)
+
+    def test_freshness_is_per_resource_and_diagnostics_exclude_paths(self):
+        state = backend_server.SessionState(client_factory=FakeAxonClient)
+        try:
+            users = state.workspace.activate_snapshot("Users", [{"Axon User ID": "test-user"}])
+            groups = state.workspace.activate_snapshot("Groups", [{"Axon Group ID": "test-group"}])
+            data = state.dashboard()
+            self.assertEqual(data["resourceFreshness"]["Users"]["snapshotId"], users["snapshotId"])
+            self.assertEqual(data["resourceFreshness"]["Users"]["activatedAt"], users["activatedAt"])
+            self.assertEqual(data["resourceFreshness"]["Groups"]["activatedAt"], groups["activatedAt"])
+            state.diagnostics.record("TEST-ID", "GET", 200, 3)
+            self.assertNotIn("path", state.diagnostics.snapshot()["requests"][0])
+        finally:
+            state.close()
+
+    def test_device_only_model_pull_does_not_pull_other_resources(self):
+        state = backend_server.SessionState(client_factory=FakeAxonClient)
+        self.addCleanup(state.close)
+        state.set_credentials("fixture-partner", "fixture-client", "fixture-secret")
+        job = state.start_sync({"resources": ["Devices"], "deviceModel": "Body 4"})
+        deadline = time.time() + 5
+        result = state.job(job["jobId"])
+        while result["status"] in {"queued", "running"} and time.time() < deadline:
+            time.sleep(0.02)
+            result = state.job(job["jobId"])
+        self.assertEqual(result["status"], "complete", result.get("error"))
+        calls = FakeAxonClient.instances[-1].calls
+        self.assertEqual(len(calls), 1)
+        self.assertTrue(calls[0][0].endswith("/devices"))
+        self.assertEqual(calls[0][1]["model"], "Body 4")
+        self.assertEqual(result["receivedRecords"], 2)
 
     def test_shared_governance_initialization_is_missing_only(self):
         shared_root = self.temp_path / "shared" / "working"
@@ -176,7 +294,7 @@ class BackendServerTests(unittest.TestCase):
         state = backend_server.SessionState(client_factory=FakeAxonClient)
         try:
             state.set_credentials("agency-1234", "client-id", "client-secret")
-            full_job = state.start_sync({"resources": ["Devices", "Groups"]})
+            full_job = state.start_sync({"resources": ["DeviceHomes", "Users", "Devices", "Groups"]})
             deadline = time.time() + 5
             full_result = state.job(full_job["jobId"])
             while full_result["status"] in {"queued", "running"} and time.time() < deadline:
@@ -417,7 +535,7 @@ class BackendServerTests(unittest.TestCase):
         self.assertEqual(inventory["TEST-MAPPED"]["mappedSiteId"], "TEST-SITE-MAPPED")
         self.assertEqual(inventory["TEST-MAPPED"]["regionAor"], "Mapped AOR")
         self.assertEqual(
-            [row["sourceId"] for row in payload["crosswalkReview"]],
+            [row["sourceId"] for row in payload["crosswalkReview"] if not row["isReviewed"]],
             ["Candidate Home", "Candidate Group"],
         )
         groups = {row["groupId"]: row for row in payload["groups"]}
@@ -448,6 +566,7 @@ class BackendServerTests(unittest.TestCase):
 
     def test_canceled_multi_resource_pull_does_not_activate_partial_snapshots(self):
         state = backend_server.SessionState(client_factory=FakeAxonClient)
+        state.workspace.bind_tenant(self.config_example["agency_base_url"])
         prior = state.workspace.activate_snapshot(
             "DeviceHomes",
             [{
@@ -730,6 +849,64 @@ class BackendServerTests(unittest.TestCase):
                 1,
                 {"changes": {"Mapping Method": "Observed ID"}},
             )
+
+    def test_bulk_crosswalk_preview_and_atomic_commit(self):
+        self.seed_second_bulk_row()
+        listing = backend_server.list_crosswalk("device-homes")
+        revision = listing["revision"]
+        numbers = [row["rowNumber"] for row in listing["rows"]]
+        self.assertGreaterEqual(len(numbers), 2)
+        body = {"mode": "preview", "expectedRevision": revision, "rowNumbers": numbers,
+                "changes": {"Confidence": "Low"}, "reason": "Synthetic batch review"}
+        preview = backend_server.bulk_update_crosswalk("device-homes", body)
+        self.assertEqual(preview["changedCount"], len(numbers))
+        self.assertEqual(backend_server.list_crosswalk("device-homes")["revision"], revision)
+        result = backend_server.bulk_update_crosswalk("device-homes", {**body, "mode": "apply", "previewHash": preview["previewHash"]})
+        self.assertTrue(result["saved"])
+        self.assertFalse(result["axonWrite"])
+        after = backend_server.list_crosswalk("device-homes")
+        self.assertEqual(after["revision"], revision + 1)
+        self.assertTrue(all(row["values"]["Confidence"] == "Low" for row in after["rows"]))
+        self.assertTrue(all("Synthetic batch review" in row["values"]["Review Notes"] for row in after["rows"]))
+        with self.assertRaises(backend_server.CrosswalkConflictError):
+            backend_server.bulk_update_crosswalk("device-homes", body)
+
+    def test_bulk_crosswalk_failed_validation_never_partially_saves(self):
+        self.seed_second_bulk_row()
+        before = backend_server.list_crosswalk("device-homes")
+        body = {"mode": "preview", "expectedRevision": before["revision"], "rowNumbers": [1, 2],
+                "changes": {"Confidence": "Low"}, "reason": "Synthetic review"}
+        with patch.object(backend_server, "_validate_crosswalk_row", side_effect=[None, backend_server.UserInputError("second row invalid")]):
+            with self.assertRaisesRegex(backend_server.UserInputError, "Row 2"):
+                backend_server.bulk_update_crosswalk("device-homes", body)
+        self.assertEqual(backend_server.list_crosswalk("device-homes"), before)
+
+    def seed_second_bulk_row(self):
+        _, path, _, rows, revision = backend_server._read_crosswalk("device-homes")
+        second = {**rows[0], "Site ID": "SYNTHETIC-SITE-2"}
+        backend_server.governance_workspace().replace_governance_rows(
+            path.stem, [*rows, second], revision, "synthetic-test", "test", {})
+
+    def test_bulk_crosswalk_rejects_tampering_identity_and_formula(self):
+        before = backend_server.list_crosswalk("device-homes")
+        body = {"mode": "preview", "expectedRevision": before["revision"], "rowNumbers": [1],
+                "changes": {"Confidence": "Low"}, "reason": "Synthetic review"}
+        preview = backend_server.bulk_update_crosswalk("device-homes", body)
+        with self.assertRaises(backend_server.CrosswalkConflictError):
+            backend_server.bulk_update_crosswalk("device-homes", {**body, "mode": "apply", "changes": {"Confidence": "High"}, "previewHash": preview["previewHash"]})
+        for changes in [{"Site ID": "other"}, {"Review Notes": "replace history"}, {"Reviewer": "=HYPERLINK(1)"}]:
+            with self.assertRaises(backend_server.UserInputError):
+                backend_server.bulk_update_crosswalk("device-homes", {**body, "changes": changes})
+        self.assertEqual(backend_server.list_crosswalk("device-homes"), before)
+
+    def test_bulk_crosswalk_all_matching_uses_listing_filter(self):
+        listing = backend_server.list_crosswalk("device-homes", search="  Example  ")
+        revision = listing["revision"]
+        preview = backend_server.bulk_update_crosswalk("device-homes", {
+            "mode": "preview", "expectedRevision": revision, "allMatching": True, "search": "  Example  ",
+            "changes": {"Confidence": "Low"}, "reason": "Synthetic filtered review"})
+        self.assertEqual(preview["selectedCount"], listing["total"])
+        self.assertEqual([row["rowNumber"] for row in preview["preview"]], [row["rowNumber"] for row in listing["rows"]])
 
     def test_crosswalk_edit_values_reject_spreadsheet_formula_prefixes(self):
         editable_fields = sorted({

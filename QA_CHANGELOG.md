@@ -1,5 +1,115 @@
 # QA and Change Log — V3.1.0
 
+## V3.2.1 local test credentials — 2026-09-07
+
+- Added explicit opt-in local Axon test profile outside the repository and .venv.
+  Interactive Windows/macOS helpers hide credential entry, require plaintext
+  storage consent and use private file access. No third-party dependency added.
+- Normal source entry points load the profile independently; library/test state
+  construction and native/frozen entry points do not. A no-test-credentials flag
+  disables it. Invalid profiles fail closed with redacted warnings.
+- Preserved tenant binding, current approval/revision, write enablement, final
+  confirmation and chunk checks. Test-file mode replaces Partner ID retyping
+  with exact displayed-origin confirmation, not automatic authorization.
+- Manual override and clear-session remove file mode for that process. Clearing
+  does not delete the file; restart reloads it. Rotation deliberately replaces
+  the private profile without creating secret-bearing backups.
+- Secret values never appear in session metadata. Provisioning command displays
+  and command-return output redact held credentials. Added Git exclusions and
+  publish rejection for local profiles, including force-added paths.
+- Tests: 41 root Python, 60 Geographic Python, 33 Provisioning Python,
+  5 Geographic UI and 14 Provisioning UI passed (153 total). Both builds passed.
+  Coverage includes malformed/oversized/permissive/linked profiles, hidden
+  secret errors, exact-target checks, no authentication on load, workspace
+  revision unchanged on load, manual override, clear/rotate and approval gates.
+- Synthetic browser inspection confirmed the file-loaded disclosure, blank
+  secret fields, target checkbox and separate approval/Submit state. No live
+  credentials or remote API calls were used. Windows ACL code is mock-tested;
+  standard-user Windows 11 and live-tenant acceptance remain pending.
+
+## V3.2.1 bulk review follow-up — 2026-09-06
+
+- Added common multi-field batch preview/confirmation to crosswalk and user review.
+  Crosswalk bulk tables are accessible inside Review without leaving the task.
+- Added explicit page/all-matching selection, count/scope explanations, filtered
+  user selection, before/after preview pagination and shared change reasons.
+- Crosswalk writes use one validated revision-protected batch; preserve source
+  identities and previous review notes. Invalid second rows, stale revisions,
+  altered preview hashes and formula-like values are rejected without partial writes.
+- User preview covers up to 1,500 rows, exact Group IDs (including duplicate friendly
+  names), intentional Group clearing, no-op exclusion and identity protection.
+  Run edits regenerate records/chunks, revalidate and invalidate old approval.
+- Automated regression: 26 root Python, 59 Geographic Python, 31 Provisioning
+  Python, 5 Geographic UI and 14 Provisioning UI tests passed (135 total).
+  Both client builds passed. Synthetic browser tests confirmed a 30-user change
+  spanning two preview pages, crosswalk batch save, zero-result blocked filter,
+  search-driven selection reset, and review controls in both entry points.
+- No live Axon/Entra calls, operational database edits, commit, push or release ZIP.
+  Standard-user Windows and complete accessibility acceptance remain untested.
+
+## V3.2.1 source testing candidate — 2026-09-06
+
+- Preserved shared SQLite, atomic multi-resource activation, explicit submission
+  approval, assignment-only editing, and the source-launch runtime.
+- Added completed-job plus field-level confirmation, lease renewal and activation
+  fencing, and explicit one-time legacy tenant binding.
+- Freshness now uses each selected resource's activation time and scope. A local
+  revision check is visibly distinct from an Axon refresh.
+- Added a focused Review destination, complete reviewed/exception filtering, and
+  inline creation of another relationship to an existing site. Non-site Groups
+  remain non-geographic. Device scope explicitly clears or ignores inapplicable
+  filters rather than silently carrying them into a full pull.
+- Added shared synchronization health, local retry guidance, semantic text sizing,
+  collapsed advanced navigation, and bounded payload-free support diagnostics.
+- Browser testing found and corrected an accidental module-scope JSX expression
+  that prevented Provisioning from opening. Added a render smoke regression.
+- Final automated verification: 25 shared + 55 Geographic + 31 Provisioning Python
+  tests; 5 Geographic + 11 Provisioning UI tests (127 total). Both Vite builds pass.
+- Synthetic browser verification: inline site relationship save and Reviewed
+  visibility, assignment revision save, explicit approval-to-Submit handoff without
+  submission, and local diagnostics display. See FORGEFLOW_REVIEW_V3_2_1.md for
+  remaining platform/live acceptance limits. No live Axon/Entra calls or writes,
+  operational migration, package regeneration, Git commit, or push was performed.
+
+## Unreleased Geographic Operations corrections — 2026-09-05
+
+- Independent startup requests prevent a failed summary or slow dashboard from
+  disabling healthy local table editors. Read requests time out with retry guidance;
+  write requests are not automatically timed out or retried.
+- Directory fields, roles, locations and job titles use recognizable record labels
+  and their governed review status in the editor.
+- Crosswalk review includes an inline mapping editor. Site targets are selected
+  explicitly; partial existing records are never offered as vacant slots. Axon
+  source identity is locked in this editor. Non-site Groups can be classified
+  without assigning a site. Existing validation, prior-value conflict checks,
+  backups and shared-workspace saves are reused. Dirty edits block navigation.
+- Devices no longer silently adds Users and Device Homes to the pull. Existing
+  shared snapshots provide context; absent context remains unavailable until
+  explicitly refreshed. Background pull progress remains visible after closing
+  connection settings.
+- The connection panel initially selects Device Homes only. Devices requires a
+  scope filter or explicit unfiltered-inventory selection. The six operator-supplied
+  exact model values are the default, editable, locally saved model filter:
+  axon_body_4_dock_8_bay, axon_body_4_dock_1_bay, taser_etm_flex_2,
+  axon_body_cam_4, taser_body_cam_3, taser_cew_10_handle.
+- Models are sent to Axon as a request filter, not just hidden after download.
+  Filtered snapshots remain separate from the full baseline. Existing full
+  snapshots are not deleted. Device page pacing remains unchanged.
+- A lightweight workspace revision check replaces unconditional four-second
+  dashboard reconstruction. This is local change detection, not an Axon delta feed.
+- Verification: 18 shared Python tests, 31 provisioning Python tests, 53 geographic
+  Python tests, 10 provisioning UI tests and 4 geographic UI tests passed (116).
+  Geographic assets rebuilt. Synthetic browser checks passed for inline Device
+  Home and non-site Group saves, automatic queue updates, dirty-navigation
+  protection and source-field editor save. No browser console errors observed.
+- Limits: the operator's precise Windows table failure has not been reproduced.
+  Windows 11 and real-tenant throughput acceptance remain pending. No live Axon
+  writes or agency-record imports were performed. Existing release ZIPs unchanged.
+- Incremental Axon refresh is NOT implemented or claimed: supplied clippings do
+  not establish a change-feed contract. Verify endpoint-specific change filters,
+  deletion signals and cursor semantics before merging deltas into saved baselines.
+  Local hashing alone cannot reduce the API records downloaded.
+
 ## Implemented verification
 
 | Area | Result | Evidence |

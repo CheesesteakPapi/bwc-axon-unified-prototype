@@ -1,4 +1,88 @@
-# Local and Axon API Contract — V3.1.0
+# Local and Axon API Contract — V3.2.1 testing candidate
+
+## Opt-in local testing credential profile — 2026-09-07
+
+Normal source entry points may read one private local Axon testing profile.
+Session construction in tests/library use does not auto-load it. The
+`--no-test-credentials` flag disables loading; frozen/native entry points do not
+enable it. Loading validates structure/access/target only, not Axon credentials.
+No new credential download or file-writing HTTP endpoint exists.
+
+Session metadata adds `credentialSource` (`session` or `local-test-file`),
+`testCredentialsLoaded`, `testCredentialTarget` (canonical HTTPS origin),
+`credentialWarning` (redacted actionable message), and `credentialValidation`
+(`not-verified`: loading does not verify remote authentication). No Client ID,
+Client Secret or full Partner ID is exposed by these additions.
+
+For a file-loaded Provisioning session, a write request can replace
+`confirmAgency` with `confirmTarget: true` and `targetOrigin` equal to the exact
+loaded canonical origin. The configured tenant must still match; the server
+supplies the held Partner ID to the existing CLI internally. Manual sessions
+continue requiring `confirmAgency`. This does not bypass `confirmWrite`, run
+approval/revision, write enablement, tenant binding or eligible-chunk checks.
+Clear-session endpoints remove in-memory credentials only, not the on-disk file.
+
+## Bulk governance review
+
+Authenticated Geographic endpoint: `POST /api/crosswalks/{key}/bulk`.
+The existing local session/CSRF boundary applies. Request fields:
+
+- `mode`: `preview` or `apply`.
+- `expectedRevision`: table revision returned by the crosswalk list endpoint.
+- `rowNumbers`: explicit unique 1-based table row numbers; alternatively
+  `allMatching: true` with `search` uses the identical trimmed listing predicate.
+- `changes`: shared field/value object restricted to returned `bulkEditableFields`.
+- `reason`: required 1–1,000 characters; formula/control-character protections apply.
+- `previewHash`: required for apply, binding table, revision, exact selection,
+  fields and reason to a previously reviewed preview.
+
+Returns selected/changed/unchanged counts and per-row before/after differences.
+The limit is 1,500 selected rows; identity/key fields and direct note replacement
+are prohibited. Apply revalidates the entire batch and uniqueness before one
+revision-protected SQLite commit, then regenerates its CSV projection. Conflicts
+return 409; invalid inputs return the existing validation error response. No Axon
+API is invoked. Projection warnings distinguish a committed database change from
+an export failure. Preview hashes detect stale/tampered intent; they are not an
+authorization credential or a replacement for the local authenticated session.
+
+Provisioning bulk review uses the existing run-edit endpoint with explicit row
+IDs and assignment-only edits. Its client preview is a proposed difference list,
+not a claim of successful validation; save recalculates the whole run and may
+return Needs Review. A new revision invalidates previous submission approval.
+
+## V3.2.1 contract additions
+
+- Both authenticated services expose `GET /api/support/diagnostics`. It returns
+  the last 200 local requests in the current process: request ID, method, UTC time,
+  HTTP status, and duration only. No routes, URLs, payloads, credentials, or personnel
+  values are retained. Responses carry `X-BWC-Request-ID`. Diagnostics never trigger
+  Axon calls; storage is volatile and failures cannot fail a business operation.
+- Public configuration includes `tenantHost`, `legacyBindingRequired`, and
+  `workspaceRevision`. Configuration saves accept `confirmLegacyTenant: true`
+  and `expectedWorkspaceRevision` to bind existing unbound snapshots/runs once.
+  Missing confirmation or another tenant is rejected; stale revision returns 409.
+  There is no rebind operation. A different tenant requires a separate workspace.
+- Geographic `POST /api/review/relationships` accepts `key` (device-homes or
+  axon-groups), `targetRowNumber`, `expectedRevision`, and `values`. It creates
+  an additional reviewed relationship to an existing site, with locked site
+  metadata, the current field validation, identity uniqueness, audit, and revision
+  conflict checks. It changes local governance only, never Axon.
+- Geographic dashboard `resourceFreshness` describes each selected resource's
+  snapshot ID, activation time, and scope. A latest-activity timestamp must not
+  be interpreted as the age of every resource. Review rows include `isReviewed`;
+  the reviewed queue includes completed decisions rather than filtering them out
+  before the operator chooses a filter.
+- Run responses include `confirmationSummary`; pending overlay payloads may
+  include `confirmation` with mismatched/unobservable field names. A completed
+  user job is not itself confirmed Axon state. Confirmation requires a full Users
+  snapshot, unique matching Email AND External ID, and matching observable
+  submitted values. Missing fields remain unverified. Group job completion is
+  tracked separately and is never inferred from a Users snapshot.
+- Refresh acquisition starts a renewable heartbeat (normally every 30 seconds).
+  Activation validates the unique lease token and expiry inside the same SQLite
+  transaction. An expired/replaced worker cannot activate or release its successor.
+  All application refresh callers pass their lease token. No Axon delta feed,
+  automatic write retry, or faster vendor response time is claimed.
 
 ## Local-service boundary
 

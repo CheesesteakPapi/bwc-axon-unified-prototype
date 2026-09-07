@@ -1,4 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
+import { SyncHealth } from "../../ui/SyncHealth.jsx";
+import { BulkChanges } from "../../ui/BulkChanges.jsx";
 import {
   ArrowLeftIcon,
   CheckCircledIcon,
@@ -32,6 +34,8 @@ import {
 import { localApi } from "./api.js";
 import { TaskHome, TaskNavigation } from "../../ui/TaskHome.jsx";
 import "../../ui/theme.css";
+import { loadWorkspace, devicePullNeedsScope, effectiveDeviceScope } from "./workspaceUi.js";
+import { ReviewMappingEditor } from "./ReviewMappingEditor.jsx";
 import { LocationGuide } from "./LocationGuide.jsx";
 import { InventoryWorkspace } from "./InventoryWorkspace.jsx";
 import { emptyInventoryFilters } from "./inventoryView.js";
@@ -227,9 +231,9 @@ function Sidebar({ page, setPage, exceptionCount, collapsed, setCollapsed }) {
 function AppHeader({ page, component, setComponent, orgView, setOrgView, isLive, dataMode, session, lastSyncAt, backendAvailable, onOpenConnection }) {
   const mapScoped = ["dashboard", "map", "report-preview"].includes(page);
   const componentScoped = isLive && ["dashboard", "map", "report-preview"].includes(page);
-  const scopeCopy = page === "crosswalk" ? "Filters are inside Crosswalk Review" : page === "facilities" ? "Local facility governance" : ["access", "access-groups"].includes(page) ? "Users, roles, and Groups" : page === "assignments" ? "All observed assignments" : page === "reports" ? "Exports preserve their stated scope" : page === "provenance" ? "All loaded sources" : page === "settings" ? "Local preferences" : "Current workflow";
+  const scopeCopy = ["review", "crosswalk"].includes(page) ? "Filters are inside the review workspace" : page === "facilities" ? "Local facility governance" : ["access", "access-groups"].includes(page) ? "Users, roles, and Groups" : page === "assignments" ? "All observed assignments" : page === "reports" ? "Exports preserve their stated scope" : page === "provenance" ? "All loaded sources" : page === "settings" ? "Local preferences" : "Current workflow";
   return <header className={`topbar ${mapScoped || componentScoped ? "has-scope-controls" : "scope-compact"}`}>
-    <div className="title-block"><div className="title-line"><h1>BWC Geographic Operations</h1><span className={`data-mode ${isLive ? "live" : "demo"}`}>{dataModeLabel(dataMode)}</span></div><p>{isLive ? (lastSyncAt ? formatTimestamp(lastSyncAt) : "Saved Axon snapshot · see per-resource refresh details") : "Synthetic demonstration data · not an Axon snapshot"} <InfoCircledIcon aria-label="Data freshness information" /></p></div>
+    <div className="title-block"><div className="title-line"><h1>BWC Geographic Operations</h1><span className={`data-mode ${isLive ? "live" : "demo"}`}>{dataModeLabel(dataMode)}</span></div><p>{isLive ? (lastSyncAt ? `Latest resource activity: ${formatTimestamp(lastSyncAt)} · individual times in Data sources` : "Saved Axon snapshot · see per-resource refresh details") : "Synthetic demonstration data · not an Axon snapshot"} <InfoCircledIcon aria-label="Data freshness information" /></p></div>
     {componentScoped && <label className="select-control"><span>Component <small>Dashboard, map, inventory</small></span><select value={component} onChange={(event) => setComponent(event.target.value)}><option>All Components</option><option>HSI</option><option>ERO</option><option>OCIO</option></select></label>}
     {mapScoped && <label className="select-control wide"><span>Organizational View <small>Map and report only</small></span><select value={orgView} onChange={(event) => setOrgView(event.target.value)}><option>HSI Domestic AORs</option><option>OCIO Areas</option><option>ERO Field Office AORs</option><option>HSI International</option></select></label>}
     {!mapScoped && !componentScoped && <div className="header-scope-note"><strong>Page scope</strong><span>{scopeCopy}</span></div>}
@@ -260,7 +264,7 @@ function FilterPopover({ filters, onApply, onClose }) {
   </div>;
 }
 
-function ConnectionModal({ open, backendAvailable, config, session, syncJob, onClose, onSave, onPull, onClear }) {
+function ConnectionModal({ open, backendAvailable, config, session, syncJob, onClose, onSave, onPull, onClear, onReload }) {
   const dialogRef = useRef(null);
   const closeButtonRef = useRef(null);
   const onCloseRef = useRef(onClose);
@@ -269,8 +273,10 @@ function ConnectionModal({ open, backendAvailable, config, session, syncJob, onC
   const [partnerId, setPartnerId] = useState("");
   const [clientId, setClientId] = useState("");
   const [clientSecret, setClientSecret] = useState("");
-  const [resources, setResources] = useState(["DeviceHomes", "Groups", "Users", "Devices"]);
-  const [deviceModel, setDeviceModel] = useState("");
+  const [resources, setResources] = useState(["DeviceHomes"]);
+  const [deviceScope, setDeviceScope] = useState("tracked");
+  const [confirmLegacyTenant, setConfirmLegacyTenant] = useState(false);
+  const [deviceModel, setDeviceModel] = useState(config.deviceModel || "");
   const [deviceStatus, setDeviceStatus] = useState("");
   const [deviceHomeId, setDeviceHomeId] = useState("");
   const [busy, setBusy] = useState(false);
@@ -278,6 +284,7 @@ function ConnectionModal({ open, backendAvailable, config, session, syncJob, onC
 
   useEffect(() => { onCloseRef.current = onClose; }, [onClose]);
   useEffect(() => { setAgencyBaseUrl(config.agencyBaseUrl || ""); setTimeoutSeconds(config.timeoutSeconds || 90); }, [config]);
+  useEffect(() => { setDeviceModel(config.deviceModel || ""); setConfirmLegacyTenant(false); }, [config]);
   useEffect(() => {
     if (!open) return undefined;
     const previousFocus = document.activeElement;
@@ -310,10 +317,14 @@ function ConnectionModal({ open, backendAvailable, config, session, syncJob, onC
   }
 
   async function save(pullAfter) {
+    const effective = effectiveDeviceScope(deviceScope, {deviceModel,deviceStatus,deviceHomeId});
+    if (pullAfter && (!resources.length || devicePullNeedsScope(resources, effective, deviceScope === "full"))) {
+      setError("Choose a resource. For Devices, enter a filter or explicitly select the full inventory option."); return;
+    }
     setBusy(true); setError("");
     try {
-      await onSave({ agencyBaseUrl, timeoutSeconds }, { partnerId, clientId, clientSecret });
-      if (pullAfter) await onPull({ resources, deviceModel, deviceStatus, deviceHomeId });
+      await onSave({ agencyBaseUrl, timeoutSeconds, deviceModel: deviceScope === "custom" ? config.deviceModel : deviceModel, confirmLegacyTenant, expectedWorkspaceRevision:config.workspaceRevision }, { partnerId, clientId, clientSecret });
+      if (pullAfter) await onPull({ resources, ...effective });
       setPartnerId(""); setClientId(""); setClientSecret("");
     } catch (caught) {
       setError(caught.message);
@@ -323,11 +334,15 @@ function ConnectionModal({ open, backendAvailable, config, session, syncJob, onC
   }
 
   return <div className="modal-backdrop" role="presentation"><section ref={dialogRef} className="connection-modal" role="dialog" aria-modal="true" aria-labelledby="connection-title">
-    <div className="modal-heading"><div><p className="eyebrow">READ-ONLY LOCAL CONNECTION</p><h2 id="connection-title">Connect and pull Axon data</h2><p>Credentials stay in memory for this session. Resource calls are GET-only; the only POST to Axon requests an OAuth token.</p></div><button ref={closeButtonRef} type="button" onClick={onClose} aria-label="Close connection settings"><Cross2Icon /></button></div>
+    <div className="modal-heading"><div><p className="eyebrow">READ-ONLY LOCAL CONNECTION</p><h2 id="connection-title">Connect and pull Axon data</h2><p>Session credentials are used for live calls, not local review. Resource calls are GET-only; the only POST to Axon requests an OAuth token.</p></div><button ref={closeButtonRef} type="button" onClick={onClose} aria-label="Close connection settings"><Cross2Icon /></button></div>
     {!backendAvailable && <div className="inline-alert"><ExclamationTriangleIcon /><span>Live connection requires the packaged Python launcher. The design preview remains illustrative.</span></div>}
     <div className="connection-grid">
       <div className="connection-section"><h3>1. Connection</h3>
+        {session.credentialWarning && <p role="alert">{session.credentialWarning}</p>}
+        {session.testCredentialsLoaded && <p>Local test credential file loaded. Loading the file does not verify access with Axon. Leave credential fields blank to keep it. The plaintext file remains after exit or clearing this session.</p>}
         <label><span>Axon Evidence tenant URL</span><input value={agencyBaseUrl} onChange={(event) => setAgencyBaseUrl(event.target.value)} placeholder="https://your-agency.evidence.com" autoComplete="url" /></label>
+        {config.legacyBindingRequired && <label className="check-row"><input type="checkbox" checked={confirmLegacyTenant} onChange={e=>setConfirmLegacyTenant(e.target.checked)} /> I confirm the existing local data belongs to this tenant (one-time binding).</label>}
+        {config.tenantHost && <p>Workspace bound to {config.tenantHost}. Other tenants require a separate workspace.</p>}
         <label><span>Partner / Agency ID</span><input value={partnerId} onChange={(event) => setPartnerId(event.target.value)} placeholder={session.configured ? `Active for ${session.partnerHint}; leave blank to keep` : "Required for this session"} autoComplete="off" /></label>
         <label><span>Client ID</span><input value={clientId} onChange={(event) => setClientId(event.target.value)} placeholder={session.configured ? "Active; leave blank to keep" : "Required for this session"} autoComplete="off" /></label>
         <label><span>Client Secret</span><input type="password" value={clientSecret} onChange={(event) => setClientSecret(event.target.value)} placeholder={session.configured ? "Active; leave blank to keep" : "Required for this session"} autoComplete="new-password" /></label>
@@ -336,15 +351,18 @@ function ConnectionModal({ open, backendAvailable, config, session, syncJob, onC
       </div>
       <div className="connection-section"><h3>2. Read-only pull</h3>
         <fieldset><legend>Resources</legend>{["DeviceHomes", "Groups", "Users", "Devices"].map((name) => <label className="check-row" key={name}><input type="checkbox" checked={resources.includes(name)} onChange={() => toggleResource(name)} /> {name}</label>)}</fieldset>
-        <label><span>Device model</span><input value={deviceModel} onChange={(event) => setDeviceModel(event.target.value)} placeholder="One model or comma-separated exact model strings" /></label>
+        {resources.includes("Devices") && <label><span>Device pull scope</span><select value={deviceScope} onChange={e=>setDeviceScope(e.target.value)}><option value="tracked">Tracked models only</option><option value="custom">Custom filtered pull</option><option value="full">Full inventory — all models</option></select><small>{deviceScope === "full" ? "All device filters are cleared for this request. This may take many minutes." : deviceScope === "tracked" ? "Uses the saved tracked-model list; status and Home filters are ignored." : "Uses the exact model, status and Home filters below."}</small></label>}
+        <fieldset disabled={deviceScope === "full"}><legend>Device filters</legend><label><span>Tracked device models</span><input value={deviceModel} onChange={(event) => setDeviceModel(event.target.value)} placeholder="One model or comma-separated exact model strings" /><small>Saved on this workstation. Sent as Axon's model filter before downloading; other models are not requested. Use exact API model values.</small></label>
         <label><span>Exact device status2</span><input value={deviceStatus} onChange={(event) => setDeviceStatus(event.target.value)} placeholder="Optional exact Axon value" /></label>
         <label><span>Exact Device Home ID</span><input value={deviceHomeId} onChange={(event) => setDeviceHomeId(event.target.value)} placeholder="Optional exact Axon homeId" /></label>
+        </fieldset>
+        <p>Only selected resources are pulled. Existing saved snapshots remain available while this background task runs.</p>
         <div className="pacing-note"><InfoCircledIcon /><span>The Device API is automatically paced to one request every five seconds. Model filtering is sent to Axon before pagination and can materially reduce pull time.</span></div>
         {syncJob && <div className={`sync-progress ${syncJob.status}`} role="status"><ReloadIcon className={running ? "spinning" : ""} /><div><strong>{syncJob.phase}</strong><span>{syncJob.completedResources?.length || 0} of {syncJob.resources?.length || resources.length} resources complete{syncJob.currentResource ? ` · ${syncJob.currentResource} page ${syncJob.currentPage || 1} · ${number(syncJob.receivedRecords || 0)} records` : ""}</span>{syncJob.error && <span className="error-text">{syncJob.error}</span>}</div></div>}
       </div>
     </div>
     {error && <div className="inline-alert error" role="alert"><ExclamationTriangleIcon /><span>{error}</span></div>}
-    <div className="modal-actions"><button type="button" className="text-danger" onClick={onClear} disabled={!session.configured || busy || running}>Clear session credentials</button><span /><button type="button" className="secondary-button" onClick={() => save(false)} disabled={!backendAvailable || busy || running}>Save connection</button><button type="button" className="primary-button" onClick={() => save(true)} disabled={!backendAvailable || busy || running}>{running ? <ReloadIcon className="spinning" /> : <DownloadIcon />} {running ? "Pulling…" : "Pull selected data"}</button></div>
+    <div className="modal-actions"><button type="button" className="secondary-button" onClick={onReload} disabled={busy || running}>Reload settings</button><button type="button" className="text-danger" onClick={onClear} disabled={!session.configured || busy || running}>Clear session credentials</button><span /><button type="button" className="secondary-button" onClick={() => save(false)} disabled={!backendAvailable || busy || running}>Save connection</button><button type="button" className="primary-button" onClick={() => save(true)} disabled={!backendAvailable || busy || running}>{running ? <ReloadIcon className="spinning" /> : <DownloadIcon />} {running ? "Pulling…" : "Pull selected data"}</button></div>
   </section></div>;
 }
 
@@ -399,7 +417,7 @@ function ProvenanceStrip({ liveData, isLive }) {
     : liveData.mode === "partial"
       ? "Partial Axon resources; device metrics unavailable"
       : isLive ? "Confirmed full Axon baseline" : "Illustrative";
-  return <section className="provenance-strip" aria-label="Data provenance summary"><div><span>Data mode</span><strong className={isLive ? "good" : "provisional-text"}>{scopeCopy}</strong></div><div><span>Last refresh</span><strong>{isLive ? new Date(liveData.lastSyncAt).toLocaleString() : "Aug 28, 2026"}</strong></div><div><span>Resource rows</span><strong>{isLive ? `D ${number(counts.Devices)} · U ${number(counts.Users)} · G ${number(counts.Groups)}` : "Illustrative dataset"}</strong></div><div><span>Boundary validation</span><strong className="provisional-text">Provisional</strong></div><div className="calculation"><span>Calculation</span><strong>{liveData.mode === "partial" ? "Run a full Devices refresh to calculate device metrics" : "Mapping completion = devices with reviewed Site ID ÷ devices in the stated scope"}</strong></div><InfoCircledIcon /></section>;
+  return <section className="provenance-strip" aria-label="Data provenance summary"><div><span>Data mode</span><strong className={isLive ? "good" : "provisional-text"}>{scopeCopy}</strong></div><div><span>Latest resource refresh (mixed ages)</span><strong>{isLive ? new Date(liveData.lastSyncAt).toLocaleString() : "Aug 28, 2026"}</strong></div><div><span>Resource rows</span><strong>{isLive ? `D ${number(counts.Devices)} · U ${number(counts.Users)} · G ${number(counts.Groups)}` : "Illustrative dataset"}</strong></div><div><span>Boundary validation</span><strong className="provisional-text">Provisional</strong></div><div className="calculation"><span>Calculation</span><strong>{liveData.mode === "partial" ? "Run a full Devices refresh to calculate device metrics" : "Mapping completion = devices with reviewed Site ID ÷ devices in the stated scope"}</strong></div><InfoCircledIcon /></section>;
 }
 
 function PendingOverlayPanel({ data }) {
@@ -408,7 +426,7 @@ function PendingOverlayPanel({ data }) {
   if (!pending.length) return null;
   const visible = state === "All pending states" ? pending : pending.filter((row) => row.state === state);
   const projected = data.projectedSummary || {};
-  return <section className="pending-overlay-panel" aria-label="Provisioning changes pending Axon confirmation"><div className="pending-overlay-heading"><div><p className="eyebrow">SHARED WORKSPACE · PROVISIONING OVERLAY</p><h2>Provisioning changes are visible, but not confirmed Axon truth</h2><p>Confirmed metrics remain unchanged. The projected user total is shown separately.</p></div><div className="pending-projection"><span>Confirmed Users</span><strong>{number(projected.confirmedUsers)}</strong><span>Baseline + Pending</span><strong>{number(projected.baselinePlusPendingUsers)}</strong></div></div><div className="pending-toolbar"><label><span>Provisioning state</span><select value={state} onChange={(event) => setState(event.target.value)}><option>All pending states</option><option>Confirmed</option><option>Proposed creation</option><option>Proposed update</option><option>Submitted—awaiting confirmation</option><option>Failed</option><option>Superseded</option></select></label><span>Workspace revision {data.workspaceRevision || 0} · {visible.length} visible</span></div><div className="table-shell"><table><caption className="sr-only">Provisioning user overlays from the shared workspace</caption><thead><tr><th>User</th><th>State</th><th>Role</th><th>Group</th><th>Location</th><th>Personnel AOR</th><th>Run revision</th></tr></thead><tbody>{visible.slice(0, 25).map((row, index) => <tr key={`${row.runId}-${row.email}-${index}`}><td>{row.name || row.email}<small>{row.email}</small></td><td><span className="source-state provisional">{row.state}</span></td><td>{row.role || "—"}</td><td>{row.group || "—"}</td><td>{row.location || "—"}</td><td>{row.personnelAor || "—"}</td><td>{row.runId} · R{row.runRevision}</td></tr>)}</tbody></table></div>{pending.length > 25 && <p className="pending-limit">Showing the first 25 overlay rows. Use Provisioning Center for run-level editing and review.</p>}</section>;
+  return <section className="pending-overlay-panel" aria-label="Provisioning changes pending Axon confirmation"><div className="pending-overlay-heading"><div><p className="eyebrow">SHARED WORKSPACE · PROVISIONING OVERLAY</p><h2>Provisioning changes are visible, but not confirmed Axon truth</h2><p>Confirmed metrics remain unchanged. The projected user total is shown separately.</p></div><div className="pending-projection"><span>Confirmed Users</span><strong>{number(projected.confirmedUsers)}</strong><span>Baseline + Pending</span><strong>{number(projected.baselinePlusPendingUsers)}</strong></div></div><div className="pending-toolbar"><label><span>Provisioning state</span><select value={state} onChange={(event) => setState(event.target.value)}><option>All pending states</option><option>Confirmed</option><option>Proposed creation</option><option>Proposed update</option><option>Submitted—awaiting confirmation</option><option>Failed</option><option>Superseded</option></select></label><span>Workspace revision {data.workspaceRevision || 0} · {visible.length} visible</span></div><div className="table-shell"><table><caption className="sr-only">Provisioning user overlays from the shared workspace</caption><thead><tr><th>User</th><th>State</th><th>Role</th><th>Group</th><th>Location</th><th>Personnel AOR</th><th>Run revision</th></tr></thead><tbody>{visible.slice(0, 25).map((row, index) => <tr key={`${row.runId}-${row.email}-${index}`}><td>{row.name || row.email}<small>{row.email}</small></td><td><span className="source-state provisional">{row.state}</span>{!!row.confirmation?.unobservableFields?.length && <small>Unverified fields: {row.confirmation.unobservableFields.join(", ")}</small>}{!!row.confirmation?.mismatchedFields?.length && <small>Values differ: {row.confirmation.mismatchedFields.join(", ")}</small>}</td><td>{row.role || "—"}</td><td>{row.group || "—"}</td><td>{row.location || "—"}</td><td>{row.personnelAor || "—"}</td><td>{row.runId} · R{row.runRevision}</td></tr>)}</tbody></table></div>{pending.length > 25 && <p className="pending-limit">Showing the first 25 overlay rows. Use Provisioning Center for run-level editing and review.</p>}</section>;
 }
 
 function Dashboard({ selectedTask, setSelectedTask, setPage, orgView, liveData, isLive, summary }) {
@@ -462,37 +480,46 @@ const newRowDefaultsByTable = {
   "site-group-relationships": { "Mapping Status": "Pending review", "Mapping Method": "Not assessed", Confidence: "Not rated" },
 };
 
-function CrosswalkReviewQueue({ rows, isLive, defaultReviewState, onOpenTable }) {
+function CrosswalkReviewQueue({ rows, isLive, defaultReviewState, onOpenTable, backendAvailable, showToast, onDirtyChange }) {
+  const [bulkTable, setBulkTable] = useState("");
   const [status, setStatus] = useState(defaultReviewState === "Mapped" ? "Reviewed" : defaultReviewState === "All states" ? "All records" : "Exceptions");
   const [search, setSearch] = useState("");
-  const [selectedKey, setSelectedKey] = useState(rows[0]?.normalizedKey || rows[0]?.sourceId || "");
-  useEffect(() => { setSelectedKey(rows[0]?.normalizedKey || rows[0]?.sourceId || ""); }, [rows]);
+  const [reviewDirty, setReviewDirty] = useState(false);
+  const [lockedSource, setLockedSource] = useState(null);
+  const rowKey = (row) => `${row?.sourceType}:${row?.normalizedKey || row?.sourceId}`;
+  useEffect(() => { onDirtyChange(reviewDirty); return () => onDirtyChange(false); }, [reviewDirty,onDirtyChange]);
+  const [selectedKey, setSelectedKey] = useState(rowKey(rows[0]));
+
   useEffect(() => { setStatus(defaultReviewState === "Mapped" ? "Reviewed" : defaultReviewState === "All states" ? "All records" : "Exceptions"); }, [defaultReviewState]);
   const visibleRows = useMemo(() => rows.filter((row) => {
     const searchMatch = !search || Object.values(row).join(" ").toLowerCase().includes(search.toLowerCase());
-    const reviewed = String(row.reviewStatus || "").toLowerCase() === "reviewed";
+    const reviewed = row.isReviewed === true || String(row.reviewStatus || "").toLowerCase() === "reviewed";
     const statusMatch = status === "All records" || (status === "Reviewed" ? reviewed : !reviewed);
     return searchMatch && statusMatch;
   }), [rows, search, status]);
-  const selected = visibleRows.find((row) => (row.normalizedKey || row.sourceId) === selectedKey) || visibleRows[0];
+  const selected = reviewDirty && lockedSource ? lockedSource : visibleRows.find((row) => rowKey(row) === selectedKey) || visibleRows[0];
   useEffect(() => {
-    if (selected) setSelectedKey(selected.normalizedKey || selected.sourceId);
-  }, [selected?.normalizedKey, selected?.sourceId]);
+    if (selected) { setSelectedKey(rowKey(selected)); if (!reviewDirty) setLockedSource(selected); }
+  }, [selected, reviewDirty]);
   function chooseRow(key, event) {
     if (event && !["Enter", " "].includes(event.key)) return;
     if (event) event.preventDefault();
+    if (reviewDirty) { showToast("Save or reset this review before selecting another record."); return; }
     setSelectedKey(key);
   }
   return <>
-    <div className="page-toolbar"><label><span>Mapping status</span><select value={status} onChange={(event) => setStatus(event.target.value)}><option>Exceptions</option><option>All records</option><option>Reviewed</option></select></label><label className="search-control"><MagnifyingGlassIcon /><input aria-label="Search crosswalk records" placeholder="Search home, group, site, city, or ID" value={search} onChange={(event) => setSearch(event.target.value)} /></label><span className="toolbar-chip">{isLive ? "Axon snapshot" : "Southeast AOR"}</span><span className="toolbar-chip critical">{visibleRows.length} review records</span></div>
-    <div className="review-layout"><div className="table-shell"><table role="grid"><caption className="sr-only">Crosswalk records. Select a row to review its mapping basis.</caption><thead><tr><th>Source type</th><th>Observed source</th><th>Suggested organizational unit</th><th>Mapping method</th><th>Confidence</th></tr></thead><tbody>{visibleRows.map((row) => { const key = row.normalizedKey || row.sourceId; return <tr key={`${row.sourceType}-${key}`} className={selectedKey === key ? "selected keyboard-selectable" : "keyboard-selectable"} tabIndex="0" aria-selected={selectedKey === key} onClick={() => chooseRow(key)} onKeyDown={(event) => chooseRow(key, event)}><td>{row.sourceType}</td><td>{row.sourceId}</td><td>{row.suggestedUnit}</td><td>{row.mappingMethod}</td><td><span className={`confidence ${String(row.confidence).toLowerCase().replace(" ", "-")}`}>{row.confidence}</span></td></tr>; })}{!visibleRows.length && <tr><td colSpan="5">No crosswalk records match the current filters.</td></tr>}</tbody></table></div>
-      <aside className="record-detail">{selected ? <><div className="record-title"><DrawingPinIcon /><div><span>Selected {selected.sourceType}</span><h3>{selected.sourceId}</h3></div></div><dl><div><dt>Observed source</dt><dd>{selected.sourceId}</dd></div><div><dt>Normalized key / ID</dt><dd>{selected.normalizedKey || "—"}</dd></div><div><dt>Suggested organizational unit</dt><dd>{selected.suggestedUnit}</dd></div><div><dt>Mapping method</dt><dd>{selected.mappingMethod}</dd></div><div><dt>Review basis</dt><dd>{selected.reviewNotes}</dd></div></dl><div className="review-queue-note"><InfoCircledIcon /><span>This is a triage snapshot. Record and save the governed decision in the editable shared-workspace table.</span></div><div className="detail-actions"><button type="button" className="primary-button" onClick={() => onOpenTable(selected.sourceType === "Device Home" ? "device-homes" : "axon-groups")}><TableIcon /> Open editable table</button>{selected.sourceType === "Axon Group" && selected.suggestedUnit === "Non-site group" && <button type="button" className="secondary-button" onClick={() => onOpenTable("non-site-groups")}>Open non-site register</button>}</div></> : <p>No review records match the current filters.</p>}</aside>
+    <div className="page-toolbar"><label>Review mode<select aria-label="Crosswalk review mode" disabled={reviewDirty} value={bulkTable} onChange={e=>setBulkTable(e.target.value)}><option value="">Review one observed source</option>{Object.entries(crosswalkTables).map(([key,table])=><option key={key} value={key}>Bulk review: {table.label}</option>)}</select></label></div>
+    {bulkTable ? <><p>Select existing mapping rows below to apply shared decisions. New source relationships can be created in single-source review; bulk editing never invents identities.</p><CrosswalkEditor key={bulkTable} tableKey={bulkTable} backendAvailable={backendAvailable} showToast={showToast} onDirtyChange={setReviewDirty}/></> : <>
+    <div className="page-toolbar"><label><span>Mapping status</span><select disabled={reviewDirty} value={status} onChange={(event) => setStatus(event.target.value)}><option>Exceptions</option><option>All records</option><option>Reviewed</option></select></label><label className="search-control"><MagnifyingGlassIcon /><input disabled={reviewDirty} aria-label="Search crosswalk records" placeholder="Search home, group, site, city, or ID" value={search} onChange={(event) => setSearch(event.target.value)} /></label><span className="toolbar-chip">{isLive ? "Axon snapshot" : "Southeast AOR"}</span><span className="toolbar-chip critical">{visibleRows.length} review records</span></div>
+    <div className="review-layout"><div className="table-shell"><table role="grid"><caption className="sr-only">Crosswalk records. Select a row to review its mapping basis.</caption><thead><tr><th>Source type</th><th>Observed source</th><th>Suggested organizational unit</th><th>Mapping method</th><th>Confidence</th></tr></thead><tbody>{visibleRows.map((row) => { const key = rowKey(row); return <tr key={`${row.sourceType}-${key}`} className={selectedKey === key ? "selected keyboard-selectable" : "keyboard-selectable"} tabIndex="0" aria-selected={selectedKey === key} onClick={() => chooseRow(key)} onKeyDown={(event) => chooseRow(key, event)}><td>{row.sourceType}</td><td>{row.sourceId}</td><td>{row.suggestedUnit}</td><td>{row.mappingMethod}</td><td><span className={`confidence ${String(row.confidence).toLowerCase().replace(" ", "-")}`}>{row.confidence}</span></td></tr>; })}{!visibleRows.length && <tr><td colSpan="5">No crosswalk records match the current filters.</td></tr>}</tbody></table></div>
+      <aside className="record-detail">{selected ? <><div className="record-title"><DrawingPinIcon /><div><span>Selected {selected.sourceType}</span><h3>{selected.sourceId}</h3></div></div><dl><div><dt>Observed source</dt><dd>{selected.sourceId}</dd></div><div><dt>Normalized key / ID</dt><dd>{selected.normalizedKey || "—"}</dd></div><div><dt>Suggested organizational unit</dt><dd>{selected.suggestedUnit}</dd></div><div><dt>Mapping method</dt><dd>{selected.mappingMethod}</dd></div><div><dt>Review basis</dt><dd>{selected.reviewNotes}</dd></div></dl>{isLive ? <ReviewMappingEditor key={rowKey(selected)} source={selected} backendAvailable={backendAvailable} onDirtyChange={setReviewDirty} showToast={showToast} /> : <p>Illustrative records are not editable. Load a saved Axon snapshot to review observed records.</p>}<button type="button" className="secondary-button" disabled={reviewDirty} onClick={() => onOpenTable(selected.sourceType === "Device Home" ? "device-homes" : "axon-groups")}>Open full table (optional)</button></> : <p>No review records match the current filters.</p>}</aside>
     </div>
+    </>}
   </>;
 }
 
 function recordIdentity(row) {
-  return row.values["Site ID"] || row.values["Office Location ID"] || row.values["Facility ID"] || row.values["Group Name"] || row.values["Axon Group Name"] || row.values["Axon Group ID"] || `Row ${row.rowNumber}`;
+  return row.values["Canonical Field"] || row.values["Role Name"] || row.values["Directory Location"] || row.values["Exact Job Title"] || row.values["Site ID"] || row.values["Office Location ID"] || row.values["Facility ID"] || row.values["Group Name"] || row.values["Axon Group Name"] || row.values["Axon Group ID"] || `Row ${row.rowNumber}`;
 }
 
 function recordContext(row) {
@@ -501,7 +528,7 @@ function recordContext(row) {
 
 function recordStatus(row, drafts) {
   const values = { ...row.values, ...(drafts[row.rowNumber] || {}) };
-  return values["Mapping Status"] || values["Facility Link Status"] || values["Validation Status"] || values["Group Status"] || "Needs review";
+  return values["Review Status"] || values["Mapping Status"] || values["Facility Link Status"] || values["Validation Status"] || values["Group Status"] || "Needs review";
 }
 
 function CrosswalkEditor({ tableKey, backendAvailable, showToast, onDirtyChange, onSaved }) {
@@ -513,6 +540,8 @@ function CrosswalkEditor({ tableKey, backendAvailable, showToast, onDirtyChange,
   const [drafts, setDrafts] = useState({});
   const [selectedRowNumber, setSelectedRowNumber] = useState(0);
   const [bulkSelected, setBulkSelected] = useState([]);
+  const [allMatching, setAllMatching] = useState(false);
+  const [bulkDirty, setBulkDirty] = useState(false);
   const [bulkLink, setBulkLink] = useState({ facilityId: "", mappingMethod: "Manual exception", confidence: "Medium", reviewNotes: "" });
   const [savingRow, setSavingRow] = useState(0);
   const [savingAll, setSavingAll] = useState(false);
@@ -525,7 +554,7 @@ function CrosswalkEditor({ tableKey, backendAvailable, showToast, onDirtyChange,
   const pendingCount = Object.values(drafts).filter((changes) => Object.keys(changes).length).length;
   const newRowDirty = showCreate && Object.entries(newValues).some(([field, value]) => String(value || "") !== String(newRowDefaults[field] || ""));
   const unsavedRows = pendingCount + (newRowDirty ? 1 : 0);
-  const hasUnsaved = unsavedRows > 0;
+  const hasUnsaved = unsavedRows > 0 || bulkDirty;
 
   useEffect(() => { onDirtyChange(hasUnsaved); }, [hasUnsaved, onDirtyChange]);
   useEffect(() => () => onDirtyChange(false), [onDirtyChange]);
@@ -538,6 +567,7 @@ function CrosswalkEditor({ tableKey, backendAvailable, showToast, onDirtyChange,
       setPayload(result);
       setSelectedRowNumber((current) => result.rows.some((row) => row.rowNumber === current) ? current : result.rows[0]?.rowNumber || 0);
       setBulkSelected([]);
+      setAllMatching(false);
     }).catch((caught) => {
       if (active) setError(caught.message);
     }).finally(() => {
@@ -676,8 +706,12 @@ function CrosswalkEditor({ tableKey, backendAvailable, showToast, onDirtyChange,
   const lockedColumns = (payload?.columns || []).filter((column) => !editable.has(typeof column === "string" ? column : column.key));
   const selectedRow = rows.find((row) => row.rowNumber === selectedRowNumber) || rows[0];
   const selectedDirty = Boolean(selectedRow && Object.keys(drafts[selectedRow.rowNumber] || {}).length);
+  const bulkCount = allMatching ? payload?.total || 0 : bulkSelected.length;
+  function bulkRequest(changes, reason) {
+    return {expectedRevision:payload.revision, rowNumbers:bulkSelected, allMatching, search:appliedSearch, changes, reason};
+  }
   return <div className="crosswalk-editor">
-    <div className="local-edit-notice"><LockClosedIcon /><div><strong>Focused shared-workspace editing</strong><span>Changes commit to the authoritative shared SQLite workspace. {payload?.fileName || "The governed CSV"} is refreshed as a review/export projection, and every save creates a timestamped CSV backup. Axon remains read-only.</span></div>{hasUnsaved && <><span className="toolbar-chip critical" aria-live="polite">{unsavedRows} staged row{unsavedRows === 1 ? "" : "s"}</span><button type="button" className="primary-button save-all-button" disabled={savingAll} onClick={saveAll}>{savingAll ? "Saving…" : "Save all changes"}</button></>}</div>
+    <div className="local-edit-notice"><LockClosedIcon /><div><strong>Focused shared-workspace editing</strong><span>Changes commit to the authoritative shared SQLite workspace. {payload?.fileName || "The governed CSV"} is refreshed as a review/export projection, and every save creates a timestamped CSV backup. Axon remains read-only.</span></div>{unsavedRows > 0 && <><span className="toolbar-chip critical" aria-live="polite">{unsavedRows} staged row{unsavedRows === 1 ? "" : "s"}</span><button type="button" className="primary-button save-all-button" disabled={savingAll} onClick={saveAll}>{savingAll ? "Saving…" : "Save all changes"}</button></>}</div>
     <form className="page-toolbar crosswalk-editor-toolbar" onSubmit={submitSearch}>
       <label className="search-control"><MagnifyingGlassIcon /><input aria-label={`Search ${crosswalkTables[tableKey].shortLabel} table`} placeholder={tableKey === "facility-master" ? "Search facility, host, city, ownership, or notes" : tableKey === "office-presences" ? "Search Office Location ID, component, facility, network, or office" : tableKey === "non-site-groups" || tableKey === "group-master" ? "Search Group ID, name, tier, hierarchy, or notes" : tableKey === "site-group-relationships" ? "Search Office Location ID, Facility ID, Group ID, or relationship" : "Search Site ID, office, API name, or Group ID"} value={search} onChange={(event) => setSearch(event.target.value)} /></label>
       <button type="submit" className="secondary-button">Search</button>
@@ -687,16 +721,35 @@ function CrosswalkEditor({ tableKey, backendAvailable, showToast, onDirtyChange,
       <span className="toolbar-chip">{payload ? `${payload.total.toLocaleString()} rows` : "Loading rows"}</span>
     </form>
     {error && <div className="inline-alert crosswalk-error" role="alert"><ExclamationTriangleIcon /><span>{error}</span></div>}
+    {payload && <section aria-label="Bulk crosswalk review">
+      <div className="bulk-selection"><strong>{bulkCount} selected</strong>
+        <button type="button" disabled={loading || pendingCount > 0 || newRowDirty} onClick={()=>{setAllMatching(false);setBulkSelected(rows.map(row=>row.rowNumber));}}>Select this page ({rows.length})</button>
+        <button type="button" disabled={loading || pendingCount > 0 || newRowDirty || payload.total > 1500} onClick={()=>{setBulkSelected([]);setAllMatching(true);}}>Select all matching records ({payload.total})</button>
+        <button type="button" onClick={()=>{setBulkSelected([]);setAllMatching(false);}}>Clear selection</button>
+        <span>{allMatching ? "All search results, including other pages." : "Individual selections are for this page."}</span>
+      </div>
+      {(pendingCount > 0 || newRowDirty) && <p>Save or discard individual edits before using bulk changes.</p>}
+      <BulkChanges key={tableKey} count={bulkCount} fields={payload.bulkEditableFields || []} options={payload.fieldOptions}
+        signature={JSON.stringify([payload.revision,bulkSelected,allMatching,appliedSearch])}
+        disabled={loading || pendingCount > 0 || newRowDirty || savingAll || !!savingRow}
+        onDirtyChange={setBulkDirty}
+        onPreview={(changes,reason)=>localApi.bulkCrosswalk(tableKey,{...bulkRequest(changes,reason),mode:"preview"})}
+        onApply={async(changes,reason,preview)=>{
+          const result=await localApi.bulkCrosswalk(tableKey,{...bulkRequest(changes,reason),mode:"apply",previewHash:preview.previewHash});
+          setBulkSelected([]);setAllMatching(false);setReloadToken(v=>v+1);onSaved?.();
+          showToast(result.projectionWarning || `Saved ${result.changedCount} crosswalk records together. Axon was not changed.`);
+        }}/>
+    </section>}
     {tableKey === "office-presences" && payload && <section className="bulk-link-panel" aria-labelledby="bulk-link-title"><div><strong id="bulk-link-title">Link reviewed co-located offices together</strong><span>Select office presences below, then stage one existing Facility ID and one documented review basis for all selected offices. Address or city similarity never creates a link automatically.</span></div><label><span>Existing Facility ID</span><input value={bulkLink.facilityId} onChange={(event) => setBulkLink((current) => ({ ...current, facilityId: event.target.value }))} /></label><label><span>Mapping method</span><select value={bulkLink.mappingMethod} onChange={(event) => setBulkLink((current) => ({ ...current, mappingMethod: event.target.value }))}>{crosswalkSelectOptions["Mapping Method"].map((option) => <option key={option}>{option}</option>)}</select></label><label><span>Confidence</span><select value={bulkLink.confidence} onChange={(event) => setBulkLink((current) => ({ ...current, confidence: event.target.value }))}>{crosswalkSelectOptions.Confidence.map((option) => <option key={option}>{option}</option>)}</select></label><label className="bulk-notes"><span>Review notes</span><input value={bulkLink.reviewNotes} onChange={(event) => setBulkLink((current) => ({ ...current, reviewNotes: event.target.value }))} /></label><button type="button" className="secondary-button" onClick={stageBulkFacilityLink}>Stage link for {bulkSelected.length} selected</button></section>}
     {showCreate && payload && <form className="new-crosswalk-row" onSubmit={createRow}><div className="new-row-heading"><div><strong>{crosswalkTables[tableKey].createTitle}</strong><span>{crosswalkTables[tableKey].createDescription} Required identity and evidence fields are validated before the shared workspace changes.</span></div><span className="toolbar-chip">Shared workspace</span></div><div className="new-row-grid">{editableFields.map((field) => { const options = payload.fieldOptions?.[field] || crosswalkSelectOptions[field]; return <label key={field}><span>{field}</span>{options ? <select value={newValues[field] || ""} onChange={(event) => setNewValues((current) => ({ ...current, [field]: event.target.value }))}><option value="">Select…</option>{options.map((option) => <option key={option}>{option}</option>)}</select> : field === "Review Notes" ? <textarea rows="3" value={newValues[field] || ""} onChange={(event) => setNewValues((current) => ({ ...current, [field]: event.target.value }))} /> : <input value={newValues[field] || ""} onChange={(event) => setNewValues((current) => ({ ...current, [field]: event.target.value }))} />}</label>; })}</div><div className="new-row-actions"><button type="submit" className="primary-button" disabled={creating}>{creating ? "Adding…" : "Validate and add"}</button><button type="button" className="secondary-button" onClick={() => { setShowCreate(false); setNewValues(newRowDefaults); }}>Cancel</button></div></form>}
     {loading && <div className="crosswalk-loading" role="status">Loading the local governance table…</div>}
-    {!loading && payload && <div className="governance-editor-layout"><section className="governance-record-list" aria-label={`${crosswalkTables[tableKey].label} records`}><div className="record-list-heading"><div><strong>Records</strong><span>Select one to review and edit</span></div>{tableKey === "office-presences" && <span>{bulkSelected.length} selected</span>}</div>{rows.length ? <ul>{rows.map((row) => { const dirty = Boolean(Object.keys(drafts[row.rowNumber] || {}).length); const checked = bulkSelected.includes(row.rowNumber); return <li key={row.rowNumber} className={`${selectedRow?.rowNumber === row.rowNumber ? "selected" : ""} ${dirty ? "dirty" : ""}`}>{tableKey === "office-presences" && <label className="record-checkbox"><input type="checkbox" checked={checked} aria-label={`Select ${recordIdentity(row)} for facility linking`} onChange={(event) => setBulkSelected((current) => event.target.checked ? [...current, row.rowNumber] : current.filter((value) => value !== row.rowNumber))} /></label>}<button type="button" onClick={() => setSelectedRowNumber(row.rowNumber)} aria-current={selectedRow?.rowNumber === row.rowNumber ? "true" : undefined}><span><strong>{recordIdentity(row)}</strong><small>{recordContext(row)}</small></span><span className={`record-status ${dirty ? "changed" : ""}`}>{dirty ? "Changed" : recordStatus(row, drafts)}</span></button></li>; })}</ul> : <p className="empty-record-list">No rows match the current search.</p>}</section><section className="governance-detail-editor" aria-live="polite">{selectedRow ? <><div className="detail-editor-heading"><div><span>Selected record</span><h3>{recordIdentity(selectedRow)}</h3><p>{recordContext(selectedRow)}</p></div>{selectedDirty && <span className="toolbar-chip critical">Unsaved changes</span>}</div><details className="locked-source-fields"><summary><LockClosedIcon /> Source and locked fields</summary><dl>{lockedColumns.map((column) => { const key = typeof column === "string" ? column : column.key; return <div key={key}><dt>{key}</dt><dd>{selectedRow.values[key] || "—"}</dd></div>; })}</dl></details><form onSubmit={(event) => { event.preventDefault(); saveRow(selectedRow); }}><div className="detail-field-grid">{editableFields.map((field) => <label key={field}><span>{field}</span>{fieldControl(selectedRow, field)}</label>)}</div><div className="detail-editor-actions"><button type="submit" className="primary-button" disabled={!selectedDirty || savingRow === selectedRow.rowNumber}><CheckIcon /> {savingRow === selectedRow.rowNumber ? "Saving…" : "Save record"}</button><button type="button" className="secondary-button" disabled={!selectedDirty || savingRow === selectedRow.rowNumber} onClick={() => saveRow(selectedRow, true)}>Save and next</button><button type="button" className="secondary-button" disabled={!selectedDirty || savingRow === selectedRow.rowNumber} onClick={() => setDrafts((current) => { const next = { ...current }; delete next[selectedRow.rowNumber]; return next; })}>Reset</button></div></form></> : <p>Select a record to review.</p>}</section></div>}
+    {!loading && payload && <div className="governance-editor-layout"><section className="governance-record-list" aria-label={`${crosswalkTables[tableKey].label} records`}><div className="record-list-heading"><div><strong>Records</strong><span>Select one to review and edit</span></div><span>{bulkCount} selected</span></div>{rows.length ? <ul>{rows.map((row) => { const dirty = Boolean(Object.keys(drafts[row.rowNumber] || {}).length); const checked = bulkSelected.includes(row.rowNumber); return <li key={row.rowNumber} className={`${selectedRow?.rowNumber === row.rowNumber ? "selected" : ""} ${dirty ? "dirty" : ""}`}>{<label className="record-checkbox"><input type="checkbox" checked={allMatching || checked} disabled={allMatching || pendingCount > 0 || newRowDirty} aria-label={`Select ${recordIdentity(row)} for bulk update`} onChange={(event) => setBulkSelected((current) => event.target.checked ? [...current, row.rowNumber] : current.filter((value) => value !== row.rowNumber))} /></label>}<button type="button" onClick={() => setSelectedRowNumber(row.rowNumber)} aria-current={selectedRow?.rowNumber === row.rowNumber ? "true" : undefined}><span><strong>{recordIdentity(row)}</strong><small>{recordContext(row)}</small></span><span className={`record-status ${dirty ? "changed" : ""}`}>{dirty ? "Changed" : recordStatus(row, drafts)}</span></button></li>; })}</ul> : <p className="empty-record-list">No rows match the current search.</p>}</section><section className="governance-detail-editor" aria-live="polite">{selectedRow ? <><div className="detail-editor-heading"><div><span>Selected record</span><h3>{recordIdentity(selectedRow)}</h3><p>{recordContext(selectedRow)}</p></div>{selectedDirty && <span className="toolbar-chip critical">Unsaved changes</span>}</div><details className="locked-source-fields"><summary><LockClosedIcon /> Source and locked fields</summary><dl>{lockedColumns.map((column) => { const key = typeof column === "string" ? column : column.key; return <div key={key}><dt>{key}</dt><dd>{selectedRow.values[key] || "—"}</dd></div>; })}</dl></details><form onSubmit={(event) => { event.preventDefault(); saveRow(selectedRow); }}><div className="detail-field-grid">{editableFields.map((field) => <label key={field}><span>{field}</span>{fieldControl(selectedRow, field)}</label>)}</div><div className="detail-editor-actions"><button type="submit" className="primary-button" disabled={!selectedDirty || savingRow === selectedRow.rowNumber}><CheckIcon /> {savingRow === selectedRow.rowNumber ? "Saving…" : "Save record"}</button><button type="button" className="secondary-button" disabled={!selectedDirty || savingRow === selectedRow.rowNumber} onClick={() => saveRow(selectedRow, true)}>Save and next</button><button type="button" className="secondary-button" disabled={!selectedDirty || savingRow === selectedRow.rowNumber} onClick={() => setDrafts((current) => { const next = { ...current }; delete next[selectedRow.rowNumber]; return next; })}>Reset</button></div></form></> : <p>Select a record to review.</p>}</section></div>}
     {payload && <div className="crosswalk-pagination"><span>Page {payload.page} of {payload.totalPages || 1}</span><div><button type="button" className="secondary-button" disabled={payload.page <= 1 || hasUnsaved} onClick={() => setPage((value) => Math.max(1, value - 1))}>Previous</button><button type="button" className="secondary-button" disabled={payload.page >= payload.totalPages || hasUnsaved} onClick={() => setPage((value) => value + 1)}>Next</button></div>{hasUnsaved && <small>Save or reset staged changes before changing pages.</small>}</div>}
   </div>;
 }
 
-function CrosswalkPage({ setPage, showToast, rows, isLive, defaultReviewState, backendAvailable, onDirtyChange }) {
-  const [workspace, setWorkspace] = useState("review");
+function CrosswalkPage({ setPage, showToast, rows, isLive, defaultReviewState, backendAvailable, onDirtyChange, initialWorkspace = "review" }) {
+  const [workspace, setWorkspace] = useState(initialWorkspace);
   const [useTable, setUseTable] = useState(false);
   const [tableDirty, setTableDirty] = useState(false);
   useEffect(() => { onDirtyChange(tableDirty); }, [tableDirty, onDirtyChange]);
@@ -713,9 +766,9 @@ function CrosswalkPage({ setPage, showToast, rows, isLive, defaultReviewState, b
       <optgroup label="Locations">{["device-homes","facility-master","office-presences","site-group-relationships"].map(key => <option value={key} key={key}>{crosswalkTables[key].label}</option>)}</optgroup>
       <optgroup label="Axon Group setup">{["group-master","axon-groups","non-site-groups"].map(key => <option value={key} key={key}>{crosswalkTables[key].label}</option>)}</optgroup>
       <optgroup label="Advanced"><option value="directory-attributes">Directory field setup</option></optgroup>
-    </select></label><p>{workspace === "review" ? "Start with an observed name, then open its matching table to record a decision." : crosswalkTables[workspace].createDescription || "Review and edit shared mappings. Changes here do not write to Axon."}</p></div>
+    </select></label><p>{workspace === "review" ? "Select an observed name, edit its mapping here, and save the review decision." : crosswalkTables[workspace].createDescription || "Review and edit shared mappings. Changes here do not write to Axon."}</p></div>
     {workspace === "personnel-aor" && <button className="secondary-button" onClick={() => { if(tableDirty) {showToast("Save or discard changes before switching editors.");return;}setUseTable(!useTable); }}>{useTable ? "Use guided review" : "Use table editor / add rule"}</button>}
-    <div id="crosswalk-workspace-panel">{workspace === "review" ? <CrosswalkReviewQueue rows={rows} isLive={isLive} defaultReviewState={defaultReviewState} onOpenTable={switchWorkspace} /> : workspace === "personnel-aor" && !useTable && backendAvailable ? <LocationGuide onDirtyChange={setTableDirty} showToast={showToast} /> : <CrosswalkEditor key={workspace} tableKey={workspace} backendAvailable={backendAvailable} showToast={showToast} onDirtyChange={setTableDirty} />}</div>
+    <div id="crosswalk-workspace-panel">{workspace === "review" ? <CrosswalkReviewQueue rows={rows} isLive={isLive} defaultReviewState={defaultReviewState} onOpenTable={switchWorkspace} backendAvailable={backendAvailable} showToast={showToast} onDirtyChange={setTableDirty} /> : workspace === "personnel-aor" && !useTable && backendAvailable ? <LocationGuide onDirtyChange={setTableDirty} showToast={showToast} /> : <CrosswalkEditor key={workspace} tableKey={workspace} backendAvailable={backendAvailable} showToast={showToast} onDirtyChange={setTableDirty} />}</div>
   </section>;
 }
 
@@ -878,7 +931,7 @@ function ReportsPage({ showToast, isLive, liveData, summary, component, orgView,
 function ReportPreviewPage({ summary, component, orgView, isLive, liveData, setPage, showToast }) {
   const tasks = buildTasks(summary, isLive);
   const view = mapViews[orgView] || mapViews["HSI Domestic AORs"];
-  return <section className="readiness-report"><div className="report-actions"><button type="button" className="secondary-button" onClick={() => setPage("reports")}><ArrowLeftIcon /> Back to reports</button><button type="button" className="primary-button" onClick={() => { showToast("Print dialog opened. Choose Save as PDF on macOS or Microsoft Print to PDF on Windows."); window.print(); }}><FileTextIcon /> Print or save PDF</button></div><header><div><span className={`data-mode ${isLive ? "live" : "demo"}`}>{isLive ? dataModeLabel(liveData.mode) : "ILLUSTRATIVE — DEMO DATA"}</span><h2>BWC Geographic Readiness Brief</h2><p>{component} · {orgView}</p></div><div><strong>Snapshot</strong><span>{formatTimestamp(liveData.lastSyncAt)}</span><strong>Boundary validation</strong><span>Provisional</span></div></header><section className="report-metrics" aria-label="Readiness metrics"><article><span>Devices</span><strong>{number(summary.totalDevices)}</strong></article><article><span>Assigned</span><strong>{number(summary.assignedDevices)}</strong></article><article><span>Inventory exceptions</span><strong>{number(summary.inventoryExceptions)}</strong></article><article><span>Mapping completion</span><strong>{percentage(summary.mappingCompletion, isLive ? 1 : 0)}</strong></article></section><div className="report-body"><section><h3>{orgView}</h3><img src={view.asset} alt={view.alt} /><p className="report-map-note">Illustrative organizational reference — not for legal or operational boundary decisions.</p></section><section><h3>Priority review</h3><ol>{tasks.map((task) => <li key={task.id}><strong>{task.title}</strong><span>{task.subtitle}</span><small>Owner: {task.owner} · {task.status}</small></li>)}</ol></section></div><footer><div><strong>Calculation</strong><span>Mapping completion = devices with reviewed Site ID ÷ devices in the stated scope</span></div><div><strong>Data boundary</strong><span>{isLive ? `${dataModeLabel(liveData.mode)} · read-only Axon data with local governed crosswalk decisions` : "Illustrative demo dataset; no tenant snapshot loaded"}</span></div><div><strong>Map status</strong><span>{view.source}; provisional until authoritative owner validation</span></div></footer></section>;
+  return <section className="readiness-report"><div className="report-actions"><button type="button" className="secondary-button" onClick={() => setPage("reports")}><ArrowLeftIcon /> Back to reports</button><button type="button" className="primary-button" onClick={() => { showToast("Print dialog opened. Choose Save as PDF on macOS or Microsoft Print to PDF on Windows."); window.print(); }}><FileTextIcon /> Print or save PDF</button></div><header><div><span className={`data-mode ${isLive ? "live" : "demo"}`}>{isLive ? dataModeLabel(liveData.mode) : "ILLUSTRATIVE — DEMO DATA"}</span><h2>BWC Geographic Readiness Brief</h2><p>{component} · {orgView}</p></div><div><strong>Resource freshness</strong>{Object.entries(liveData.resourceFreshness || {}).map(([name,meta])=><span key={name}>{name}: {formatTimestamp(meta.activatedAt)} · {meta.scope?.type}</span>)}<strong>Boundary validation</strong><span>Provisional</span></div></header><section className="report-metrics" aria-label="Readiness metrics"><article><span>Devices</span><strong>{number(summary.totalDevices)}</strong></article><article><span>Assigned</span><strong>{number(summary.assignedDevices)}</strong></article><article><span>Inventory exceptions</span><strong>{number(summary.inventoryExceptions)}</strong></article><article><span>Mapping completion</span><strong>{percentage(summary.mappingCompletion, isLive ? 1 : 0)}</strong></article></section><div className="report-body"><section><h3>{orgView}</h3><img src={view.asset} alt={view.alt} /><p className="report-map-note">Illustrative organizational reference — not for legal or operational boundary decisions.</p></section><section><h3>Priority review</h3><ol>{tasks.map((task) => <li key={task.id}><strong>{task.title}</strong><span>{task.subtitle}</span><small>Owner: {task.owner} · {task.status}</small></li>)}</ol></section></div><footer><div><strong>Calculation</strong><span>Mapping completion = devices with reviewed Site ID ÷ devices in the stated scope</span></div><div><strong>Data boundary</strong><span>{isLive ? `${dataModeLabel(liveData.mode)} · read-only Axon data with local governed crosswalk decisions` : "Illustrative demo dataset; no tenant snapshot loaded"}</span></div><div><strong>Map status</strong><span>{view.source}; provisional until authoritative owner validation</span></div></footer></section>;
 }
 
 function SettingsPage({ orgView, setOrgView, onOpenConnection, onExit, showToast }) {
@@ -888,12 +941,12 @@ function SettingsPage({ orgView, setOrgView, onOpenConnection, onExit, showToast
     window.localStorage.setItem("bwc-default-organizational-view", value);
     showToast(`Default organizational view saved for this workstation: ${value}.`);
   }
-  return <section className="data-page"><div className="page-heading"><div><p className="eyebrow">CONFIGURATION</p><h2>Settings</h2><p>Local workstation preferences and application controls.</p></div><button type="button" className="primary-button" onClick={onOpenConnection}><Link2Icon /> Axon connection and pull</button></div><div className="settings-grid"><label><span>Default organizational view</span><select value={orgView} onChange={saveDefault}><option>HSI Domestic AORs</option><option>OCIO Areas</option><option>ERO Field Office AORs</option><option>HSI International</option></select><small>Saved locally in this browser and applied immediately to Dashboard, Map, and reports.</small></label><div className="notice"><InfoCircledIcon /><div><strong>Standalone security boundary</strong><p>Connection credentials remain process-memory only. Governed CSV changes use timestamped backups and a durable hash-chained audit. Axon operational access remains read-only.</p><button type="button" className="text-danger" onClick={onExit}>Exit desktop app and clear session</button></div></div></div></section>;
+  return <section className="data-page"><div className="page-heading"><div><p className="eyebrow">CONFIGURATION</p><h2>Settings</h2><p>Local workstation preferences and application controls.</p></div><button type="button" className="primary-button" onClick={onOpenConnection}><Link2Icon /> Axon connection and pull</button></div><div className="settings-grid"><label><span>Default organizational view</span><select value={orgView} onChange={saveDefault}><option>HSI Domestic AORs</option><option>OCIO Areas</option><option>ERO Field Office AORs</option><option>HSI International</option></select><small>Saved locally in this browser and applied immediately to Dashboard, Map, and reports.</small></label><div className="notice"><InfoCircledIcon /><div><strong>Standalone security boundary</strong><p>Credentials normally remain in process memory; opt-in testing profiles remain in a private local plaintext file. Governed CSV changes use timestamped backups and a durable hash-chained audit. Axon operational access remains read-only.</p><button type="button" className="text-danger" onClick={onExit}>Exit desktop app and clear session</button></div></div></div></section>;
 }
 
 function ProvenancePage({ isLive, liveData }) {
   const counts = liveData.resourceCounts || {};
-  return <section className="data-page"><div className="page-heading"><div><p className="eyebrow">GOVERNANCE · {isLive ? dataModeLabel(liveData.mode) : "SYNTHETIC"}</p><h2>Data Provenance</h2><p>Trace geographic lenses, Axon resources, filters, and validation state.</p></div></div><div className="provenance-table"><div className="provenance-row header"><span>Source</span><span>Scope</span><span>Reference date</span><span>Rows</span><span>Validation</span></div>{isLive && ["DeviceHomes", "Groups", "Users", "Devices"].map((name) => <div className="provenance-row" key={name}><span>Axon Partner API · {name}</span><span>{liveData.baselineScopes?.[name]?.type === "filtered" ? "Filtered read-only GET" : liveData.baselineScopes?.[name]?.type === "full" ? "Full read-only GET" : "Not loaded"}</span><span>{new Date(liveData.lastSyncAt).toLocaleString()}</span><span>{number(counts[name])}</span><span className={counts[name] === null ? "provisional-text" : "good"}>{counts[name] === null ? "Unavailable" : "Pulled"}</span></div>)}<div className="provenance-row"><span>Organizational coverage layer</span><span>Local AOR and command hierarchy</span><span>Not bundled</span><span>—</span><span className="provisional-text">Configure locally</span></div><div className="provenance-row"><span>Repository demonstration layer</span><span>Non-operational synthetic placeholders</span><span>Generated fixture</span><span>4 examples</span><span className="provisional-text">Synthetic</span></div></div><div className="notice"><InfoCircledIcon /><div><strong>Live-data boundary</strong><p>Axon records are tenant truth for the fields returned by the API. Planning values remain separate. Geographic assignments are governed crosswalk decisions; names are normalized only as review keys, never treated as immutable IDs.</p></div></div>{isLive && <div className="notice"><MixerHorizontalIcon /><div><strong>Device API filters used</strong><p>Model: {liveData.filters?.deviceModel || "All"}; status2: {liveData.filters?.deviceStatus || "All"}; homeId: {liveData.filters?.deviceHomeId || "All"}. {liveData.mode === "filtered" ? "This result is not the confirmed full-device baseline." : ""}</p></div></div>}</section>;
+  return <section className="data-page"><div className="page-heading"><div><p className="eyebrow">GOVERNANCE · {isLive ? dataModeLabel(liveData.mode) : "SYNTHETIC"}</p><h2>Data Provenance</h2><p>Trace geographic lenses, Axon resources, filters, and validation state.</p></div></div><div className="provenance-table"><div className="provenance-row header"><span>Source</span><span>Scope</span><span>Reference date</span><span>Rows</span><span>Validation</span></div>{isLive && ["DeviceHomes", "Groups", "Users", "Devices"].map((name) => <div className="provenance-row" key={name}><span>Axon Partner API · {name}</span><span>{liveData.baselineScopes?.[name]?.type === "filtered" ? "Filtered read-only GET" : liveData.baselineScopes?.[name]?.type === "full" ? "Full read-only GET" : "Not loaded"}</span><span>{formatTimestamp(liveData.resourceFreshness?.[name]?.activatedAt)}</span><span>{number(counts[name])}</span><span className={counts[name] === null ? "provisional-text" : "good"}>{counts[name] === null ? "Unavailable" : "Pulled"}</span></div>)}<div className="provenance-row"><span>Organizational coverage layer</span><span>Local AOR and command hierarchy</span><span>Not bundled</span><span>—</span><span className="provisional-text">Configure locally</span></div><div className="provenance-row"><span>Repository demonstration layer</span><span>Non-operational synthetic placeholders</span><span>Generated fixture</span><span>4 examples</span><span className="provisional-text">Synthetic</span></div></div><div className="notice"><InfoCircledIcon /><div><strong>Live-data boundary</strong><p>Axon records are tenant truth for the fields returned by the API. Planning values remain separate. Geographic assignments are governed crosswalk decisions; names are normalized only as review keys, never treated as immutable IDs.</p></div></div>{isLive && <div className="notice"><MixerHorizontalIcon /><div><strong>Device API filters used</strong><p>Model: {liveData.filters?.deviceModel || "All"}; status2: {liveData.filters?.deviceStatus || "All"}; homeId: {liveData.filters?.deviceHomeId || "All"}. {liveData.mode === "filtered" ? "This result is not the confirmed full-device baseline." : ""}</p></div></div>}</section>;
 }
 
 function GenericPage({ page, setPage, showToast, isLive, liveData, summary, component, orgView, setOrgView, onOpenConnection, onExit }) {
@@ -906,6 +959,8 @@ function GenericPage({ page, setPage, showToast, isLive, liveData, summary, comp
 }
 
 export function App() {
+  const [syncHealth, setSyncHealth] = useState({error:false,checkedAt:""});
+  const [reviewTable, setReviewTable] = useState("review");
   const [page, setPage] = useState("home");
   const [navCollapsed, setNavCollapsed] = useState(false);
   const [component, setComponent] = useState("All Components");
@@ -923,23 +978,62 @@ export function App() {
   const [governanceSummary, setGovernanceSummary] = useState(emptyGovernanceSummary);
   const [localWorkspaceDirty, setLocalWorkspaceDirty] = useState(false);
 
-  useEffect(() => {
-    Promise.all([localApi.health(), localApi.session(), localApi.config(), localApi.dashboard(), localApi.governanceSummary()]).then(([, sessionData, configData, dashboardData, governanceData]) => {
-      setBackendAvailable(true); setSession(sessionData); setConfig(configData); setLiveData(dashboardData); setGovernanceSummary(governanceData);
-      if (sessionData.activeJob) setSyncJob(sessionData.activeJob);
-    }).catch(() => setBackendAvailable(false));
-  }, []);
+  const [loadErrors, setLoadErrors] = useState({});
+  const [reloadWorkspace, setReloadWorkspace] = useState(0);
+  const dashboardRevision = useRef();
+  dashboardRevision.current = liveData.workspaceRevision;
+  useEffect(() => loadWorkspace(localApi, {
+    success(name, value) {
+      setLoadErrors(current => { const next = {...current}; delete next[name]; return next; });
+      if (name === "health") setBackendAvailable(true);
+      if (name === "session") { setSession(value); if (value.activeJob) setSyncJob(value.activeJob); }
+      if (name === "config") setConfig(value);
+      if (name === "dashboard") setLiveData(value);
+      if (name === "governanceSummary") setGovernanceSummary(value);
+    },
+    failure(name, error) {
+      if (name === "health") { setBackendAvailable(false); setSyncHealth(current=>({...current,error:true})); }
+      setLoadErrors(current => ({...current,[name]:error.message}));
+    },
+  }), [reloadWorkspace]);
 
   useEffect(() => {
-    if (!backendAvailable) return undefined;
-    const timer = window.setInterval(async () => {
+    if (!backendAvailable) return;
+    let active = true, pending = false;
+    const timer = setInterval(async () => {
+      if (pending) return;
+      pending = true;
       try {
-        const dashboardData = await localApi.dashboard();
-        if (dashboardData.workspaceRevision !== liveData.workspaceRevision) setLiveData(dashboardData);
-      } catch { /* keep the last complete shared baseline during transient local errors */ }
+        const revision = await localApi.revision();
+        if (active) setSyncHealth({error:false,checkedAt:new Date().toISOString()});
+        if (active && revision.workspaceRevision !== dashboardRevision.current) {
+          const data = await localApi.dashboard();
+          if (active) { setLiveData(data); dashboardRevision.current = data.workspaceRevision; setGovernanceSummary(await localApi.governanceSummary()); }
+        }
+      } catch { if (active) setSyncHealth(current=>({...current,error:true})); }
+      finally { pending = false; }
     }, 4000);
-    return () => window.clearInterval(timer);
-  }, [backendAvailable, liveData.workspaceRevision]);
+    return () => { active = false; clearInterval(timer); };
+  }, [backendAvailable]);
+
+  useEffect(() => {
+    if (!syncJob?.jobId || !["queued","running","cancel-requested"].includes(syncJob.status)) return;
+    let active = true, pending = false;
+    const timer = setInterval(async () => {
+      if (pending) return;
+      pending = true;
+      try {
+        const current = await localApi.syncStatus(syncJob.jobId);
+        if (!active) return;
+        setSyncJob(current);
+        if (current.status === "failed") setToast(current.error || "The pull failed; the previous baseline was retained.");
+        if (current.status === "canceled") setToast("Pull canceled safely; the previous baseline was retained.");
+        if (current.status === "complete") setToast("Selected resources refreshed. Saved views will update automatically.");
+      } catch (error) { if (active) setToast(error.message); }
+      finally { pending = false; }
+    }, 1000);
+    return () => { active = false; clearInterval(timer); };
+  }, [syncJob?.jobId, syncJob?.status]);
 
   const isLive = ["live", "filtered", "partial"].includes(liveData.mode);
   const summary = isLive && component !== "All Components" && liveData.mode !== "partial" ? liveData.componentSummaries?.[component] || { ...liveData.summary, totalDevices: 0, assignedDevices: 0, unassignedDevices: 0, inventoryExceptions: 0, mappedDevices: 0, mappingCompletion: 0, unmappedDeviceHomes: 0, regionCounts: {}, dispositionCounts: {} } : isLive ? liveData.summary : illustrativeSummary;
@@ -955,29 +1049,14 @@ export function App() {
     if (provided === 3) {
       const savedSession = await localApi.saveCredentials(credentialValues);
       setSession(savedSession);
-    } else if (!session.configured) {
-      throw new Error("Session credentials are required for the first live pull.");
     }
-    setToast("Connection settings saved. Credentials remain in memory only; they are checked when the live pull starts.");
+    setToast("Connection settings saved. Existing credentials are retained when fields are blank; Axon checks them when a live pull starts.");
   }
 
   async function pullLiveData(values) {
     const started = await localApi.startSync(values);
     setSyncJob(started);
-    setToast("Read-only Axon pull started. The Device API may take time because requests are paced.");
-    let current = started;
-    while (["queued", "running", "cancel-requested"].includes(current.status)) {
-      await sleep(800);
-      current = await localApi.syncStatus(started.jobId);
-      setSyncJob(current);
-    }
-    if (current.status === "failed") throw new Error(current.error || "The live Axon pull failed.");
-    if (current.status === "canceled") {
-      setToast("Axon pull stopped safely after the active request. The prior dashboard snapshot was preserved.");
-      return;
-    }
-    const [dashboardData, sessionData] = await Promise.all([localApi.dashboard(), localApi.session()]);
-    setLiveData(dashboardData); setSession(sessionData); setToast(dashboardData.mode === "filtered" ? "Filtered Axon result loaded. It is labeled separately and does not replace confirmed full-device metrics." : dashboardData.mode === "partial" ? "Partial Axon resources loaded. Run a full Devices refresh before using device metrics." : "Full Axon baseline loaded into the dashboard.");
+    setToast("Read-only pull started in the background. You can close this panel and continue editing local mappings.");
   }
 
   async function cancelSync() {
@@ -991,7 +1070,7 @@ export function App() {
 
   async function clearCredentials() {
     try {
-      const cleared = await localApi.clearCredentials(); setSession(cleared); setToast("Session credentials cleared from memory.");
+      const cleared = await localApi.clearCredentials(); setSession(cleared); setToast("Session credentials cleared from memory. A saved test profile, if present, loads again next launch.");
     } catch (error) { setToast(error.message); }
   }
 
@@ -1012,19 +1091,20 @@ export function App() {
   const pageContent = useMemo(() => {
     if (page === "home") return <TaskHome description="Check equipment, review location matches, or prepare a scoped report." tasks={[
       {title:"Find a device or assignment",description:"Search saved devices and see who has each one.",action:"Find a device",onClick:()=>setPage("inventory"),primary:true},
-      {title:"Review location matches",description:"Connect observed locations and Device Homes to the right organizational area or physical site.",action:"Review matches",onClick:()=>setPage("crosswalk")},
+      {title:"Review location matches",description:"Connect observed locations and Device Homes to the right organizational area or physical site.",action:"Review matches",onClick:()=>setPage("review")},
       {title:"Prepare a report",description:"View geographic summaries or export saved records with their stated scope.",action:"Open reports",onClick:()=>setPage("reports")},
       {title:"Setup & rules",description:"Manage roles, Groups, location matches, and directory fields.",action:"Open setup",onClick:()=>setPage("crosswalk")}
-    ]}><section><h2>Continue your work</h2><p>Review saved users and their device assignments. To create accounts, use Provisioning Center.</p><button className="secondary-button" onClick={()=>setPage("assignments")}>View people & assignments</button></section><section><h2>Saved data</h2><p>{isLive ? dataModeLabel(liveData.mode) : "No Axon snapshot loaded · demo views available"}</p><p>{isLive ? liveData.lastSyncAt ? formatTimestamp(liveData.lastSyncAt) : "Open refresh details for individual resource times." : "Examples are illustrative, not agency records."}</p><button className="text-action" onClick={()=>setConnectionOpen(true)}>View refresh details</button><button className="text-action" onClick={()=>setPage("dashboard")}>View dashboard</button></section></TaskHome>;
+    ]}><section><h2>Continue your work</h2><p>Review saved users and their device assignments. To create accounts, use Provisioning Center.</p><button className="secondary-button" onClick={()=>setPage("assignments")}>View people & assignments</button></section><section><h2>Saved data</h2><p>{isLive ? dataModeLabel(liveData.mode) : "No Axon snapshot loaded · demo views available"}</p><p>{isLive ? liveData.lastSyncAt ? `Latest resource activity: ${formatTimestamp(liveData.lastSyncAt)} · resources may have different ages` : "Open refresh details for individual resource times." : "Examples are illustrative, not agency records."}</p><button className="text-action" onClick={()=>setConnectionOpen(true)}>View refresh details</button><button className="text-action" onClick={()=>setPage("dashboard")}>View dashboard</button></section></TaskHome>;
     if (page === "help") return <section className="data-page"><h2>Choose the right task</h2><p>People shows saved users and their device assignments. Devices searches the saved inventory. Locations opens the geographic view. Setup & rules manages shared mapping tables.</p><p>To add or update accounts, start Provisioning Center using Start-Provisioning-Prototype.cmd on Windows or its Python launcher on macOS. The applications share saved data but keep credentials separate.</p><button className="secondary-button" onClick={()=>setPage("home")}>Back to Home</button></section>;
     if (page === "dashboard") return <><PendingOverlayPanel data={liveData} /><Dashboard selectedTask={selectedTask} setSelectedTask={setSelectedTask} setPage={setPage} orgView={orgView} liveData={liveData} isLive={isLive} summary={summary} /></>;
-    if (page === "crosswalk") return <CrosswalkPage setPage={setPage} showToast={setToast} rows={crosswalkRows} isLive={isLive} defaultReviewState="All states" backendAvailable={backendAvailable} onDirtyChange={setLocalWorkspaceDirty} />;
+    if (page === "review") return <section className="data-page"><h2>Review location & Group matches</h2><p>Choose an observed source, document the relationship, and save. Completed decisions remain available under Reviewed.</p><CrosswalkReviewQueue rows={crosswalkRows} isLive={isLive} defaultReviewState="Exceptions" backendAvailable={backendAvailable} onDirtyChange={setLocalWorkspaceDirty} showToast={setToast} onOpenTable={key=>{setReviewTable(key);setPage("crosswalk");}} /></section>;
+    if (page === "crosswalk") return <CrosswalkPage initialWorkspace={reviewTable} setPage={setPage} showToast={setToast} rows={crosswalkRows} isLive={isLive} defaultReviewState="All states" backendAvailable={backendAvailable} onDirtyChange={setLocalWorkspaceDirty} />;
     if (page === "facilities") return <FacilitiesPage backendAvailable={backendAvailable} governanceSummary={governanceSummary} showToast={setToast} onDirtyChange={setLocalWorkspaceDirty} onSaved={refreshGovernanceSummary} />;
     if (page === "access" || page === "access-groups") return <UsersAccessPage rows={assignmentRows} isLive={isLive} backendAvailable={backendAvailable} governanceSummary={governanceSummary} showToast={setToast} onDirtyChange={setLocalWorkspaceDirty} onSaved={refreshGovernanceSummary} initialWorkspace={page === "access-groups" ? "group-master" : "users"} />;
     if (page === "inventory") return <InventoryWorkspace filters={inventoryFilters} setFilters={setInventoryFilters} component={component} setComponent={setComponent} isLive={isLive} liveData={liveData} demoRows={illustrativeInventory} showToast={setToast} />;
     if (page === "assignments") return <AssignmentWorkspace filters={assignmentFilters} setFilters={setAssignmentFilters} isLive={isLive} liveData={liveData} showToast={setToast} />;
     return <GenericPage page={page} setPage={setPage} showToast={setToast} isLive={isLive} liveData={liveData} summary={summary} component={component} orgView={orgView} setOrgView={setOrgView} onOpenConnection={() => setConnectionOpen(true)} onExit={shutdownApplication} />;
-  }, [page, selectedTask, orgView, liveData, isLive, summary, crosswalkRows, inventoryRows, assignmentRows, component, backendAvailable, governanceSummary, inventoryFilters, assignmentFilters]);
+  }, [page, selectedTask, orgView, liveData, isLive, summary, crosswalkRows, inventoryRows, assignmentRows, component, backendAvailable, governanceSummary, inventoryFilters, assignmentFilters, reviewTable]);
 
   function navigate(next) {
     if (localWorkspaceDirty && next !== page) { setToast("Save or discard unsaved local changes before leaving this task."); return; }
@@ -1032,13 +1112,14 @@ export function App() {
   }
   const primaryPage = ["access","access-groups","assignments"].includes(page) ? "people" : page === "inventory" ? "devices" : ["map","facilities"].includes(page) ? "locations" : page === "report-preview" ? "reports" : page;
   return <><a className="skip-link" href="#main-content">Skip to main content</a>
-    <TaskNavigation items={[["home","Home"],["people","People"],["devices","Devices"],["locations","Locations"],["reports","Reports"]]} current={primaryPage} onNavigate={key=>navigate({people:"assignments",devices:"inventory",locations:"map"}[key] || key)} help={()=>navigate("help")} />
-    <div className="task-secondary-nav" aria-label="Additional workspaces">{[["dashboard","Dashboard"],["exceptions","Issues needing attention"],["crosswalk","Setup & rules"],["facilities","Physical sites"],["access","Users & Groups"],["provenance","Data sources"],["settings","Settings"]].map(([key,label])=><button key={key} aria-current={page === key ? "page" : undefined} onClick={()=>navigate(key)}>{label}</button>)}</div>
+    <TaskNavigation items={[["home","Home"],["people","People"],["devices","Devices"],["locations","Locations"],["review","Review"],["reports","Reports"]]} current={primaryPage} onNavigate={key=>navigate({people:"assignments",devices:"inventory",locations:"map"}[key] || key)} help={()=>navigate("help")} />
+    <details className="advanced-workspaces"><summary>Setup & advanced workspaces</summary><div className="task-secondary-nav" aria-label="Additional workspaces">{[["dashboard","Dashboard"],["exceptions","Issues needing attention"],["crosswalk","Setup & rules"],["facilities","Physical sites"],["access","Users & Groups"],["provenance","Data sources"],["settings","Settings"]].map(([key,label])=><button key={key} aria-current={page === key ? "page" : undefined} onClick={()=>navigate(key)}>{label}</button>)}</div></details>
+    <SyncHealth error={syncHealth.error} checkedAt={syncHealth.checkedAt} onRetry={()=>setReloadWorkspace(v=>v+1)} loadDiagnostics={localApi.supportDiagnostics}/>
     <div className="app-shell task-shell"><div className="app-workspace">
       {page !== "home" && <AppHeader page={page} component={component} setComponent={setComponent} orgView={orgView} setOrgView={setOrgView} isLive={isLive} dataMode={liveData.mode} session={session} lastSyncAt={liveData.lastSyncAt} backendAvailable={backendAvailable} onOpenConnection={()=>setConnectionOpen(true)} />}
       <SyncJobBanner job={syncJob} onOpen={()=>setConnectionOpen(true)} onCancel={cancelSync}/>
-      <main id="main-content" className="page-content" tabIndex="-1">{pageContent}</main>
-      <footer className="prototype-footer">V3.2.0 · Python source prototype · Not a signed production desktop release</footer>
+      <main id="main-content" className="page-content" tabIndex="-1">{Object.keys(loadErrors).length > 0 && <section className="inline-alert" role="alert"><div><strong>Some local panels could not load</strong>{Object.entries(loadErrors).map(([name,error])=><p key={name}>{name}: {error}</p>)}<button type="button" className="secondary-button" onClick={()=>setReloadWorkspace(v=>v+1)}>Retry local panels</button><p>Other available tables can still be edited. No Axon refresh is required to open local tables.</p></div></section>}{pageContent}</main>
+      <footer className="prototype-footer">V3.2.1 testing candidate · Python source prototype · Not a signed production desktop release</footer>
     </div>{toast && <div className="toast" role="status"><InfoCircledIcon /><span>{toast}</span><button type="button" aria-label="Dismiss notification" onClick={()=>setToast("")}><Cross2Icon /></button></div>}
-    <ConnectionModal open={connectionOpen} backendAvailable={backendAvailable} config={config} session={session} syncJob={syncJob} onClose={()=>setConnectionOpen(false)} onSave={saveConnection} onPull={pullLiveData} onClear={clearCredentials} /></div></>;
+    <ConnectionModal open={connectionOpen} backendAvailable={backendAvailable} config={config} session={session} syncJob={syncJob} onClose={()=>setConnectionOpen(false)} onSave={saveConnection} onPull={pullLiveData} onClear={clearCredentials} onReload={()=>setReloadWorkspace(v=>v+1)} /></div></>;
 }

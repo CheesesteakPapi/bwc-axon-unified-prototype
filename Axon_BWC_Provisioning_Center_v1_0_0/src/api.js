@@ -36,6 +36,7 @@ async function uploadFile(file) {
 }
 
 export const localApi = {
+  supportDiagnostics: () => request("/api/support/diagnostics"),
   health: () => request("/api/health"),
   session: () => request("/api/session"),
   config: () => request("/api/config"),

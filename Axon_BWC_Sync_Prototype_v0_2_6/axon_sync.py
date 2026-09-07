@@ -832,6 +832,7 @@ def run_sync(client: AxonClient, cfg: dict, names: list[str] | None, agency_id: 
     log_path = Path(cfg.get("sync_log_csv", "state/sync_log.csv"))
     run_id = f"SYNC-{utc_stamp()}"
     workspace = SharedWorkspace()
+    workspace.bind_tenant(cfg["agency_base_url"])
     owner_id = f"read-only-sync-{os.getpid()}"
     context_rows: dict[str, list[dict]] = {}
 
@@ -876,6 +877,7 @@ def run_sync(client: AxonClient, cfg: dict, names: list[str] | None, agency_id: 
                 mapped,
                 scope=scope,
                 source="Axon read-only sync prototype v0.2.6",
+                lease_id=refresh_id,
             )
             snapshot_id = snapshot["snapshotId"]
             workspace.release_refresh_lease(name, owner_id, refresh_id, "completed", snapshot_id=snapshot_id)

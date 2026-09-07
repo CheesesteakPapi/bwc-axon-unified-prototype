@@ -1,4 +1,35 @@
-# Shared Data Model — V3.1.0
+# Shared Data Model — V3.2.1 testing candidate
+
+## Opt-in local credential file (outside the data model)
+
+The optional source-testing profile described in LOCAL_TEST_CREDENTIALS.md is
+not a shared SQLite dataset. It is a private per-user plaintext file independently
+loaded into each process. No profile, Client ID or Client Secret is imported into
+snapshots, governance projections, provisioning rows, audit events or exports.
+It neither binds a tenant nor changes a workspace revision on load.
+
+## Additive V3.2.1 migration
+
+On opening the database, add `refresh_leases.refresh_id TEXT NOT NULL DEFAULT ''`
+if absent. Existing rows, snapshots, governance, and provisioning revisions are
+preserved. The original schema family marker remains 3.1.0; column existence is
+checked transactionally and the migration is idempotent.
+
+The optional `workspace_meta.tenant_host` binds this workspace to one canonical
+HTTPS host. Initial binding increments the workspace revision and appends a
+redacted audit event. Existing unbound snapshots/runs require explicit confirmation
+at the expected workspace revision. The application cannot safely infer the tenant
+of legacy data, and does not automatically relabel it.
+
+Pending User overlay payloads may contain `confirmation` metadata: last check,
+completed-job indicator, mismatched field names, and unobservable field names.
+These diagnostics do not change the immutable submitted run revision. Only full
+Users snapshots can confirm matching submitted records; Groups remain independent.
+Reconciliation uses identity indexes and caches completed chunk row IDs per run
+revision to avoid rescanning the full user list and requerying chunks for each row.
+
+Support diagnostics use a separate bounded in-memory ring, not another database
+or external telemetry service. They disappear when the service closes.
 
 The authoritative local store is SQLite in WAL mode with foreign keys, full synchronization, and a busy timeout. It contains normalized minimum-necessary records; raw API response bodies are not a default dataset.
 

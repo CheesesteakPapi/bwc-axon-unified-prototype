@@ -376,6 +376,24 @@ class UnifiedPrototypeTests(unittest.TestCase):
         with self.assertRaises(RevisionConflict):
             self.workspace.revise_run(run["runId"], 1, rows, validation, generation, "Ready for Preview", "stale", "stale")
 
+    def test_bulk_assignment_revision_regenerates_and_invalidates_approval(self) -> None:
+        intake = canonicalize_input([{"Email": f"batch{i}@example.test", "Role": "Prototype User"} for i in range(30)])
+        rows, validation, generation = enrich_rows(self.workspace, intake, SyntheticDirectoryProvider())
+        run = self.workspace.create_run("Synthetic batch", "synthetic-test", rows, validation, generation, "Ready for Preview")
+        approved = self.workspace.approve_preview(run["runId"], run["revision"], False, 0)
+        old_hash = approved["generation"]["userHash"]
+        edits = [{"rowId": row["rowId"], "changes": {"role": "Prototype Supervisor"}} for row in rows]
+        updated, validation, generation = edit_rows(self.workspace, rows, edits, "Synthetic shared role decision")
+        revised = self.workspace.revise_run(run["runId"], approved["revision"], updated, validation, generation,
+                                           "Ready for Preview", "30 users changed", "Synthetic shared role decision")
+        self.assertTrue(revised["validation"]["valid"])
+        self.assertTrue(all(row["role"] == "Prototype Supervisor" for row in revised["rows"]))
+        self.assertNotEqual(revised["generation"]["userHash"], old_hash)
+        self.assertFalse(revised.get("approval"))
+        self.assertFalse(any(chunk.get("axonJobId") for chunk in revised["chunks"]))
+        self.assertTrue(all(row["role"] == "Prototype User" for row in rows))
+        self.assertTrue(self.workspace.verify_audit_chain()["valid"])
+
     def test_minimal_xlsx_values_are_read_without_formula_execution(self) -> None:
         stream = BytesIO()
         with zipfile.ZipFile(stream, "w") as archive:
@@ -411,6 +429,11 @@ class UnifiedPrototypeTests(unittest.TestCase):
             [{"Email": "case.user@example.test", "External ID": rows[0]["externalId"]}],
             {"type": "full", "filters": {}},
         )
+        user_overlay = next(item for item in self.workspace.pending_overlays() if item["entityType"] == "User" and item["runRevision"] == approved["revision"])
+        self.assertEqual(user_overlay["state"], "Submitted—awaiting confirmation")
+        self.workspace.record_chunk_result(approved["runId"], approved["revision"], user_chunk["chunkId"], "completed", {})
+        current = {key: rows[0].get(key, "") for key in ("email", "externalId", "role", "status", "location", "supervisorEmail", "firstName", "lastName", "username", "badgeNumber")}
+        self.workspace.activate_snapshot("Users", [current], {"type": "full", "filters": {}})
         user_overlay = next(item for item in self.workspace.pending_overlays() if item["entityType"] == "User" and item["runRevision"] == approved["revision"])
         self.assertEqual(user_overlay["state"], "Confirmed")
 
