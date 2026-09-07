@@ -1,5 +1,29 @@
 # Master Release Notes — BWC Axon Unified Prototype
 
+## V3.2.1 follow-up — local testing profiles, 2026-09-07
+
+Optional per-user plaintext Axon credential file with restricted access,
+interactive configuration helpers, independent startup loading in both source
+apps, exact tenant protection and explicit target confirmation without Partner
+ID retyping. Approval and final Axon submission remain separate. Entra token
+handling is unchanged. 153 automated tests and both builds passed; no production,
+Windows endpoint, or live-tenant acceptance is claimed. See LOCAL_TEST_CREDENTIALS.md.
+
+## V3.2.1 — local source testing candidate, 2026-09-06
+
+Follow-up: bulk crosswalk and user-review selection, shared multi-field changes,
+paged before/after confirmation, atomic crosswalk batch validation, and automatic
+user-run regeneration without auto-approval or Axon submission. 135 automated
+checks and both frontend builds passed; synthetic browser batches verified.
+
+Trustworthy confirmation and refresh ownership; one-tenant workspace binding;
+per-resource freshness; a dedicated Review flow with complete status filters and
+inline relationship creation; explicit device scope selection; clearer navigation
+and synchronization health; bounded local support diagnostics. Architecture and
+write-approval boundaries are preserved. Source changes are prepared for the
+private GitHub main branch; no new distribution ZIP or Windows/live-tenant
+acceptance is claimed. See FORGEFLOW_REVIEW_V3_2_1.md and QA_CHANGELOG.md.
+
 ## V3.2.0 — controlled testing candidate, 2026-09-04
 
 Task Home, guided personnel mapping, plain-language setup selection, paged person review, catalog-driven role suggestions, paste handling and approval safeguards. Includes the saved-inventory and assignment enhancements previously developed on main. Source launchers for Windows and macOS; no native signing or production acceptance claim.

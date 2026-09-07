@@ -6,8 +6,10 @@ export function PeopleReview({ run, onlyExceptions, drafts, setDrafts, selected,
   const [search, setSearch] = useState("");
   const [page, setPage] = useState(0);
   const [currentId, setCurrentId] = useState("");
+  const [status, setStatus] = useState("all");
   const matches = useMemo(() => run.rows.filter(row => (!onlyExceptions || row.validationState === "Blocked" || row.warnings?.length) &&
-    [row.email,row.firstName,row.lastName,row.role].some(v => String(v || "").toLowerCase().includes(search.toLowerCase()))), [run.rows, onlyExceptions, search]);
+    (status === "all" || (status === "blocked" ? row.validationState === "Blocked" : status === "warnings" ? !!row.warnings?.length : row.validationState !== "Blocked")) &&
+    [row.email,row.firstName,row.lastName,row.role,...(row.blockers || []),...(row.warnings || [])].some(v => String(v || "").toLowerCase().includes(search.toLowerCase()))), [run.rows, onlyExceptions, search, status]);
   const actualPage = Math.min(page, Math.max(0, Math.ceil(matches.length / 25) - 1));
   const visible = matches.slice(actualPage * 25, actualPage * 25 + 25);
   const row = visible.find(item => item.rowId === currentId) || visible[0];
@@ -22,8 +24,15 @@ export function PeopleReview({ run, onlyExceptions, drafts, setDrafts, selected,
     });
   }
   return <div className="people-review">
-    <label className="people-search"><span>Find a person</span><input type="search" value={search} onChange={e => {setSearch(e.target.value);setPage(0);}} placeholder="Name, email, or role" /></label>
+    <label className="people-search"><span>Find a person</span><input type="search" value={search} onChange={e => {setSearch(e.target.value);setPage(0);setSelected(new Set());}} placeholder="Name, email, role, or issue" /></label>
     <p className="muted">{matches.length} matching people · {selected.size} selected · Identity stays read-only</p>
+    <div className="bulk-selection">
+      <label>Review filter<select aria-label="User review filter" value={status} onChange={e=>{setStatus(e.target.value);setPage(0);setSelected(new Set());}}><option value="all">All in this view</option><option value="blocked">Blocked</option><option value="warnings">With warnings</option><option value="ready">Ready for import</option></select></label>
+      <button type="button" className="secondary" disabled={disabled || !visible.length} onClick={()=>setSelected(new Set(visible.map(r=>r.rowId)))}>Select this page ({visible.length})</button>
+      <button type="button" className="secondary" disabled={disabled || !matches.length} onClick={()=>setSelected(new Set(matches.map(r=>r.rowId)))}>Select all matching people ({matches.length})</button>
+      <button type="button" className="secondary" disabled={disabled || !selected.size} onClick={()=>setSelected(new Set())}>Clear selection</button>
+      <span>All matching includes other pages. Selection remains explicit.</span>
+    </div>
     <div className="people-review-layout"><section className="people-list" aria-label="People to review">
       {visible.map(item => <div key={item.rowId} className={row?.rowId === item.rowId ? "person-row active" : "person-row"}>
         <input type="checkbox" disabled={disabled} aria-label={`Select ${item.email}`} checked={selected.has(item.rowId)} onChange={e => setSelected(current => {const next = new Set(current);if(e.target.checked) next.add(item.rowId);else next.delete(item.rowId);return next;})} />

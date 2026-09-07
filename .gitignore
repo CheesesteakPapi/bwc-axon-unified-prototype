@@ -1,4 +1,7 @@
 # Secrets and tenant-specific configuration
+credentials/
+*.local.json
+.bwc-credentials-*
 .env
 .env.*
 !.env.example

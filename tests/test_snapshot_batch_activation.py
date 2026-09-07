@@ -65,6 +65,7 @@ class SnapshotBatchActivationTests(unittest.TestCase):
             "TEST-JOB",
             "test",
         )
+        self.workspace.record_chunk_result(approved["runId"], approved["revision"], user_chunk["chunkId"], "completed", {})
 
     def test_batch_uses_one_revision_and_preserves_snapshot_side_effects(self) -> None:
         email = "batch.user@example.test"

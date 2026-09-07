@@ -55,6 +55,8 @@ from provisioning_workflow import (
     write_csv,
 )
 from shared_workspace import RefreshLeaseConflict, RevisionConflict, SharedWorkspace
+from local_diagnostics import LocalDiagnostics, DiagnosticHandlerMixin
+from local_test_credentials import TestCredentialSession, TestCredentialError
 
 from audit_store import append_event, verify_chain
 from axon_provision import (
@@ -75,7 +77,7 @@ STATIC_DIR = BASE_DIR / "dist" / "client"
 RUNTIME_ROOT = component_root("provisioning-center")
 CONFIG_PATH = RUNTIME_ROOT / "config.json"
 CONFIG_EXAMPLE_PATH = BASE_DIR / "config.example.json"
-VERSION = "3.2.0"
+VERSION = "3.2.1"
 MAX_REQUEST_BYTES = 28 * 1024 * 1024
 MAX_UPLOAD_BYTES = 20 * 1024 * 1024
 LOCAL_UI_HEADER = "X-Axon-Local-UI"
@@ -135,6 +137,7 @@ def public_config() -> dict[str, Any]:
     config, exists = load_config()
     pcfg = provisioning(config)
     return {
+        **SharedWorkspace().tenant_status(),
         "exists": exists,
         "agencyBaseUrl": str(config.get("agency_base_url") or ""),
         "timeoutSeconds": int(config.get("timeout_seconds", 90)),
@@ -162,6 +165,7 @@ def save_public_config(values: dict[str, Any]) -> dict[str, Any]:
     provision_config["write_operations_enabled"] = bool(values.get("writeOperationsEnabled", False))
     provision_config["group_entities_file_field_confirmed"] = bool(values.get("groupFileFieldConfirmed", False))
     config["provisioning"] = provision_config
+    SharedWorkspace().bind_tenant(base_url, confirm_legacy=values.get("confirmLegacyTenant") is True, expected_revision=values.get("expectedWorkspaceRevision"))
 
     temporary_path = CONFIG_PATH.with_suffix(".json.tmp")
     temporary_path.write_text(json.dumps(config, indent=2) + "\n", encoding="utf-8")
@@ -211,8 +215,10 @@ def materialize_sync_config(state: Any, config: dict[str, Any], label: str) -> P
     return config_path
 
 
-class SessionState:
+class SessionState(TestCredentialSession):
     def __init__(self) -> None:
+        self.init_test_credentials()
+        self.diagnostics = LocalDiagnostics()
         test_token = (
             os.environ.get("BWC_AXON_TEST_LAUNCH_TOKEN", "")
             if os.environ.get("BWC_AXON_TEST_MODE") == "1"
@@ -256,6 +262,7 @@ class SessionState:
             raise UserInputError("Partner/Agency ID, Client ID, and Client Secret are all required.")
         with self._lock:
             self._credentials = values
+            self.init_test_credentials()
 
     def start_shared_refresh(self, resource: str, filters: dict[str, Any] | None = None) -> dict[str, Any]:
         allowed = {"Users", "Groups", "Devices", "DeviceHomes"}
@@ -268,6 +275,7 @@ class SessionState:
             raise UserInputError("Save the Axon Evidence tenant HTTPS URL before refreshing shared data.")
 
         normalized_filters: dict[str, str] = {}
+        self.workspace.bind_tenant(config["agency_base_url"])
         if resource == "Devices":
             for key in ("model", "status2", "homeId"):
                 value = str((filters or {}).get(key) or "").strip()
@@ -339,7 +347,7 @@ class SessionState:
                 with output_path.open("r", newline="", encoding="utf-8-sig") as handle:
                     rows = list(csv.DictReader(handle))
                 activated = self.workspace.activate_snapshot(
-                    job["resource"], rows, job["scope"], "Axon API via Provisioning Center"
+                    job["resource"], rows, job["scope"], "Axon API via Provisioning Center", lease_id=job["refreshId"]
                 )
                 snapshot_id = activated["snapshotId"]
                 message = f"Activated {len(rows)} normalized {job['resource']} rows."
@@ -374,6 +382,7 @@ class SessionState:
 
     def clear_credentials(self) -> None:
         with self._lock:
+            self.init_test_credentials()
             for key in tuple(self._credentials):
                 self._credentials[key] = ""
             self._credentials = {}
@@ -384,11 +393,13 @@ class SessionState:
             configured = bool(partner_id and self._credentials.get("client_id") and self._credentials.get("client_secret"))
         return {
             "configured": configured,
-            "partnerHint": f"…{partner_id[-4:]}" if configured and len(partner_id) > 4 else (partner_id if configured else ""),
+            "partnerHint": f"…{partner_id[-4:]}" if configured and len(partner_id) > 4 else ("••••" if configured else ""),
+            **self.test_credential_status(),
         }
 
     def credential_env(self) -> dict[str, str]:
         with self._lock:
+            self.assert_credential_target(str(load_config()[0].get("agency_base_url") or ""))
             if not self.session_status()["configured"]:
                 raise UserInputError("Enter session credentials before running a function that contacts Axon.")
             credentials = dict(self._credentials)
@@ -401,6 +412,12 @@ class SessionState:
     def partner_id(self) -> str:
         with self._lock:
             return self._credentials.get("partner_id", "")
+
+    def confirm_submission_target(self, body: dict, configured_url: str) -> str:
+        try:
+            return super().confirm_submission_target(body, configured_url)
+        except TestCredentialError as exc:
+            raise UserInputError(str(exc)) from None
 
     def save_upload(self, name: str, content: bytes) -> tuple[str, Path]:
         if not content:
@@ -754,12 +771,13 @@ def _run_axon_command(state: SessionState, spec_key: str, values: dict[str, str]
     if not exists or not str(config.get("agency_base_url") or "").startswith("https://"):
         raise UserInputError("Save the Axon Evidence tenant HTTPS URL before submission or tracking.")
     pcfg = provisioning(config)
+    state.workspace.bind_tenant(config["agency_base_url"])
     if not pcfg["write_operations_enabled"] and spec_key in {"submit_users", "submit_groups"}:
         raise UserInputError("Axon write operations are disabled in local settings.")
     spec = OPERATIONS_BY_KEY[spec_key]
     command = build_command(BASE_DIR, spec, {"config": str(CONFIG_PATH), **values})
     creation_flags = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
-    return subprocess.run(
+    completed = subprocess.run(
         command,
         cwd=BASE_DIR,
         env=state.credential_env(),
@@ -772,6 +790,8 @@ def _run_axon_command(state: SessionState, spec_key: str, values: dict[str, str]
         creationflags=creation_flags,
         check=False,
     )
+    completed.stdout = state.redact_credentials(completed.stdout or "")
+    return completed
 
 
 def submit_next_run_chunk(state: SessionState, run_id: str, body: dict[str, Any]) -> dict[str, Any]:
@@ -783,9 +803,7 @@ def submit_next_run_chunk(state: SessionState, run_id: str, body: dict[str, Any]
         raise UserInputError("Approve the current preview revision before submission.")
     if not body.get("confirmWrite"):
         raise UserInputError("Final Axon submission requires an explicit confirmation.")
-    confirmation = str(body.get("confirmAgency") or "").strip()
-    if not confirmation or confirmation != state.partner_id():
-        raise UserInputError("The confirmation Agency ID does not match this credential session.")
+    confirmation = state.confirm_submission_target(body, str(load_config()[0].get("agency_base_url") or ""))
     chunk = state.workspace.eligible_chunk(run_id, expected_revision)
     if not chunk:
         raise UserInputError("No chunk is eligible. Track submitted user jobs before Group jobs are unlocked.")
@@ -1113,6 +1131,7 @@ def execute_operation(state: SessionState, body: dict[str, Any]) -> dict[str, An
     base_url = str(config.get("agency_base_url") or "")
     if "YOUR_AGENCY" in base_url or not base_url.startswith("https://"):
         raise UserInputError("Replace the placeholder with the Axon Evidence tenant HTTPS URL.")
+    state.workspace.bind_tenant(base_url)
 
     values: dict[str, str] = {"config": str(CONFIG_PATH)}
     if "user_csv" in spec.fields:
@@ -1157,9 +1176,7 @@ def execute_operation(state: SessionState, body: dict[str, Any]) -> dict[str, An
     if spec.write:
         if not body.get("confirmWrite"):
             raise UserInputError("Review the preview and explicitly approve the Axon-changing action.")
-        confirm_agency = str(body.get("confirmAgency") or "").strip()
-        if not confirm_agency or confirm_agency != state.partner_id():
-            raise UserInputError("The confirmation Agency ID does not match this credential session.")
+        confirm_agency = state.confirm_submission_target(body, str(config.get("agency_base_url") or ""))
         values["execute"] = "yes"
         values["confirm_agency"] = confirm_agency
 
@@ -1207,7 +1224,7 @@ def execute_operation(state: SessionState, body: dict[str, Any]) -> dict[str, An
                 downloads.append(state.register_download(output_path))
                 with output_path.open("r", newline="", encoding="utf-8-sig") as handle:
                     snapshot_rows = list(csv.DictReader(handle))
-                activated = state.workspace.activate_snapshot(resource, snapshot_rows, {"type": "full", "filters": {}}, "Axon API via Provisioning Center")
+                activated = state.workspace.activate_snapshot(resource, snapshot_rows, {"type": "full", "filters": {}}, "Axon API via Provisioning Center", lease_id=refresh_id)
                 state.workspace.release_refresh_lease(resource, refresh_owner, refresh_id, "completed", snapshot_id=activated["snapshotId"])
                 refresh_id = ""
     if refresh_id:
@@ -1216,19 +1233,19 @@ def execute_operation(state: SessionState, body: dict[str, Any]) -> dict[str, An
     return {
         "success": completed.returncode == 0,
         "exitCode": completed.returncode,
-        "output": completed.stdout.strip() or "Function completed without console output.",
-        "command": display_command(command),
+        "output": state.redact_credentials(completed.stdout.strip()) or "Function completed without console output.",
+        "command": state.redact_credentials(display_command(command)),
         "downloads": downloads,
     }
 
 
-class LocalAxonHandler(BaseHTTPRequestHandler):
+class LocalAxonHandler(DiagnosticHandlerMixin, BaseHTTPRequestHandler):
     server_version = "AxonBWCWeb/1.0.0"
     state: SessionState
 
     def log_message(self, format_string: str, *args: Any) -> None:
         # Request bodies and headers are intentionally excluded from logs.
-        sys.stdout.write(f"[local-ui] {self.command} {self.path.split('?', 1)[0]}\n")
+        pass
 
     def _valid_host(self) -> bool:
         host = (self.headers.get("Host") or "").lower()
@@ -1331,6 +1348,9 @@ class LocalAxonHandler(BaseHTTPRequestHandler):
             return
         if parsed.path == "/api/workspace/status":
             self._send_json(HTTPStatus.OK, {"success": True, **self.state.workspace.status()})
+            return
+        if parsed.path == "/api/support/diagnostics":
+            self._send_json(HTTPStatus.OK, self.state.diagnostics.snapshot())
             return
         if parsed.path == "/api/catalogs/groups":
             self._send_json(HTTPStatus.OK, {"success": True, "groups": group_options(self.state.workspace)})
@@ -1551,6 +1571,7 @@ def main() -> int:
     parser.add_argument("--open", action="store_true", default=bool(getattr(sys, "frozen", False)), help="Open the local UI in the default browser.")
     parser.add_argument("--no-open", action="store_false", dest="open", help=argparse.SUPPRESS)
     parser.add_argument("--no-auto-port", action="store_false", dest="auto_port", help=argparse.SUPPRESS)
+    parser.add_argument("--no-test-credentials", action="store_true", help="Ignore the optional local testing credential file for this launch.")
     args, _unknown = parser.parse_known_args()
     instance_lock = SingleInstanceLock("provisioning-center")
     if not instance_lock.acquire():
@@ -1577,6 +1598,8 @@ def main() -> int:
         {"version": VERSION, "initializedGovernanceFiles": len(initialized)},
     )
     state = SessionState()
+    if not args.no_test_credentials and not getattr(sys, "frozen", False):
+        state.load_test_credentials(str(load_config()[0].get("agency_base_url") or ""))
     server = make_server(args.port, state, auto_port=args.auto_port)
     selected_port = int(server.server_address[1])
     url = f"http://127.0.0.1:{selected_port}/"
@@ -1585,7 +1608,9 @@ def main() -> int:
     print(f"Local address: {url}")
     if selected_port != args.port:
         print(f"Port {args.port} was unavailable; selected an available local loopback port.")
-    print("Credentials remain only in this process and are cleared when it exits.")
+    print("Local test credentials loaded (plaintext file retained)." if state.session_status()["testCredentialsLoaded"] else "Credentials are entered for this process only.")
+    if state.session_status()["credentialWarning"]:
+        print(state.session_status()["credentialWarning"])
     if args.open:
         threading.Timer(0.35, lambda: webbrowser.open(launch_url)).start()
     try:

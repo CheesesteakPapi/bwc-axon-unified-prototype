@@ -36,7 +36,9 @@ SUITE_ROOT = Path(__file__).resolve().parent.parent
 if str(SUITE_ROOT) not in sys.path:
     sys.path.insert(0, str(SUITE_ROOT))
 
-from shared_workspace import RefreshLeaseConflict, RevisionConflict, SharedWorkspace
+from shared_workspace import RefreshLeaseConflict, RevisionConflict, SharedWorkspace, value_hash
+from local_diagnostics import LocalDiagnostics, DiagnosticHandlerMixin
+from local_test_credentials import TestCredentialSession
 from inventory_views import FILTER_FIELDS, filter_inventory, inventory_csv, parse_inventory_query
 from assignment_views import assignment_csv, filter_assignments, parse_assignment_query
 
@@ -61,7 +63,7 @@ from runtime_paths import (
 from desktop_message import show_error
 from instance_lock import SingleInstanceLock
 
-VERSION = "3.2.0"
+VERSION = "3.2.1"
 BASE_DIR = Path(__file__).resolve().parent
 STATIC_DIR = BASE_DIR / "dist" / "client"
 RUNTIME_ROOT = component_root("geographic-operations")
@@ -477,7 +479,7 @@ def list_crosswalk(
         raise UserInputError("Search must be 250 characters or fewer and cannot contain control characters.")
 
     with CROSSWALK_LOCK:
-        spec, _, headers, all_rows, _ = _read_crosswalk(key)
+        spec, _, headers, all_rows, dataset_revision = _read_crosswalk(key)
         indexed_rows = list(enumerate(all_rows, start=1))
     if search_text:
         needle = search_text.casefold()
@@ -516,6 +518,8 @@ def list_crosswalk(
         "pageSize": page_length,
         "totalPages": total_pages,
         "search": search_text,
+        "revision": dataset_revision,
+        "bulkEditableFields": bulk_editable_fields(spec, key),
         "rows": [{"rowNumber": row_number, "values": row} for row_number, row in page_rows],
         "storage": "shared-sqlite",
         "axonWrite": False,
@@ -543,9 +547,44 @@ def review_targets(key: str, source_key: str) -> dict[str, Any]:
                         else [identity, "Axon Group Name", "External Group ID"]))
             and row.get("Site ID", "").strip()
         ] if key != "non-site-groups" else []
-    return {"key": key, "matches": matches, "targets": matches or vacant,
+        sites = [{"rowNumber": number, "values": dict(row)} for number, row in enumerate(rows, 1) if row.get("Site ID", "").strip()] if key != "non-site-groups" else []
+    return {"key": key, "matches": matches, "targets": matches or vacant, "sites": sites,
             "editableFields": list(spec["editableFields"]), "fieldOptions": spec.get("fieldOptions", {}),
             "allowCreate": bool(spec.get("allowCreate")), "revision": revision}
+
+
+def create_review_relationship(body: dict[str, Any]) -> dict[str, Any]:
+    key = body.get("key")
+    if key not in {"device-homes", "axon-groups"}:
+        raise UserInputError("Choose a site-related Device Home or Group.")
+    with CROSSWALK_LOCK:
+        spec, path, headers, rows, revision = _read_crosswalk(key)
+        if body.get("expectedRevision") != revision:
+            raise CrosswalkConflictError("Mapping table changed. Reload the review before creating a relationship.")
+        target = int(body.get("targetRowNumber") or 0) - 1
+        if target < 0 or target >= len(rows) or not rows[target].get("Site ID", "").strip():
+            raise UserInputError("Select an existing governed site.")
+        # Copy only site metadata, never another source's identity or decision.
+        row = {header: rows[target].get(header, "") if header not in spec["editableFields"] else "" for header in headers}
+        changes = body.get("values") or {}
+        if set(changes) - set(spec["editableFields"]):
+            raise UserInputError("Site metadata and source fields must use the governed relationship contract.")
+        for field, value in changes.items():
+            row[field] = _clean_crosswalk_value(field, value)
+            _validate_crosswalk_option(spec, field, row[field])
+        if not row.get("Review Notes", "").strip():
+            raise UserInputError("Document the basis for the relationship.")
+        identity = "Normalized Device Home Key" if key == "device-homes" else "Axon Group ID"
+        if not row.get(identity):
+            raise UserInputError("An observed source identity is required.")
+        _validate_crosswalk_row(key, row, creating=True)
+        rows.append(row)
+        _validate_unique_fields(spec, rows, len(rows) - 1)
+        workspace = governance_workspace()
+        workspace.replace_governance_rows(path.stem, rows, revision, "review-relationship-created", "operator",
+                                          {"table": key, "rows": 1})
+        projection = _refresh_crosswalk_projection(workspace, path, headers, rows, "review-relationship-created", {"table": key})
+        return {"success": True, "rowNumber": len(rows), **projection}
 
 
 def _clean_crosswalk_value(field: str, value: object) -> str:
@@ -841,6 +880,85 @@ def _refresh_crosswalk_projection(
     }
 
 
+def bulk_editable_fields(spec: dict[str, Any], key: str) -> list[str]:
+    protected = set(spec.get("uniqueFields", [])) | {
+        "Site ID", "Office Location ID", "Axon Group ID", "External Group ID",
+        "Canonical Field", "Directory Attribute", "Directory Location", "Exact Job Title",
+        "Role Name", "Axon Group Name", "Device Home Name (API)", "Normalized Device Home Key",
+        "Review Notes", "Reviewed At UTC", "Group Name",
+    }
+    return [field for field in spec["editableFields"] if field not in protected]
+
+
+def bulk_update_crosswalk(key: str, body: dict[str, Any]) -> dict[str, Any]:
+    """Preview first, then atomically apply the exact validated selection."""
+    mode = body.get("mode")
+    if mode not in {"preview", "apply"}:
+        raise UserInputError("Choose preview or apply.")
+    changes = body.get("changes")
+    reason = _clean_crosswalk_value("Review Notes", body.get("reason", ""))
+    if not reason.strip() or len(reason) > 1000:
+        raise UserInputError("Enter a shared change reason of 1 to 1000 characters.")
+    if not isinstance(changes, dict) or not changes:
+        raise UserInputError("Choose at least one shared field to change.")
+    with CROSSWALK_LOCK:
+        spec, path, headers, current_rows, revision = _read_crosswalk(key)
+        if body.get("expectedRevision") != revision:
+            raise CrosswalkConflictError("The table changed. Reload, reselect and preview again. Nothing was saved.")
+        if set(changes) - set(bulk_editable_fields(spec, key)):
+            raise UserInputError("This field cannot be changed in bulk. Source identities remain individual.")
+        selected = body.get("rowNumbers")
+        if body.get("allMatching") is True:
+            search = body.get("search", "")
+            if not isinstance(search, str) or len(search.strip()) > 250 or any(char in search for char in "\r\n\0"):
+                raise UserInputError("Invalid selection filter.")
+            search = search.strip()
+            selected = [i for i, row in enumerate(current_rows, 1) if any(search.casefold() in value.casefold() for value in row.values())]
+        if not isinstance(selected, list) or not selected or len(selected) > 1500:
+            raise UserInputError("Select between 1 and 1500 records.")
+        if any(type(n) is not int or not 1 <= n <= len(current_rows) for n in selected) or len(set(selected)) != len(selected):
+            raise UserInputError("Selection contains invalid or duplicate row numbers.")
+        cleaned = {field: _clean_crosswalk_value(field, value) for field, value in changes.items()}
+        for field, value in cleaned.items():
+            _validate_crosswalk_option(spec, field, value)
+        rows = copy.deepcopy(current_rows)
+        preview = []
+        for number in selected:
+            row = rows[number - 1]
+            diffs = [{"field": field, "before": row.get(field, ""), "after": value}
+                     for field, value in cleaned.items() if row.get(field, "") != value]
+            if not diffs:
+                continue
+            row.update(cleaned)
+            row["Review Notes"] = _clean_crosswalk_value("Review Notes",
+                (row.get("Review Notes", "").strip() + "\nBulk change: " + reason).strip())
+            if "Reviewed At UTC" in headers:
+                row["Reviewed At UTC"] = utc_now_iso()
+            try:
+                _validate_crosswalk_row(key, row)
+            except UserInputError as exc:
+                raise UserInputError(f"Row {number}: {exc}. Nothing was saved.") from exc
+            preview.append({"rowNumber": number, "label": row.get(spec["rowKey"]) or row.get("Group Name") or row.get("Directory Location") or row.get("Role Name") or f"Row {number}", "differences": diffs})
+        for item in preview:
+            _validate_unique_fields(spec, rows, item["rowNumber"] - 1)
+        digest = value_hash({"key": key, "revision": revision, "selection": selected, "changes": cleaned, "reason": reason})
+        result = {"selectedCount": len(selected), "changedCount": len(preview),
+                  "unchangedCount": len(selected) - len(preview), "preview": preview,
+                  "previewHash": digest, "revision": revision, "axonWrite": False}
+        if mode == "preview":
+            return result
+        if not hmac.compare_digest(str(body.get("previewHash", "")), digest):
+            raise CrosswalkConflictError("The selection or changes no longer match the preview. Preview again.")
+        if not preview:
+            return {**result, "saved": False}
+        workspace = governance_workspace()
+        saved = workspace.replace_governance_rows(path.stem, rows, revision, "governance-bulk-updated",
+            str(body.get("reviewer") or "operator"), {"table": key, "rowCount": len(preview), "changedFields": sorted(cleaned)})
+        projection = _refresh_crosswalk_projection(workspace, path, headers, rows,
+            "governance-bulk-updated", {"table": key, "rowCount": len(preview)})
+        return {**result, **projection, "saved": True}
+
+
 def update_crosswalk_row(key: str, row_number: object, body: dict[str, Any]) -> dict[str, Any]:
     number = _positive_int(row_number, "Row number", 0)
     changes = body.get("changes")
@@ -1108,6 +1226,7 @@ def public_config() -> dict[str, Any]:
         "deviceModel": str(config.get("tracked_device_models", DEFAULT_TRACKED_DEVICE_MODELS) or ""),
         "rawJsonEnabled": False,
         "readOnly": True,
+        **governance_workspace().tenant_status(),
     }
 
 
@@ -1124,6 +1243,7 @@ def save_public_config(values: dict[str, Any]) -> dict[str, Any]:
     if "deviceModel" in values:
         config["tracked_device_models"] = clean_filter(values["deviceModel"], allow_commas=True)
     config["keep_raw_json"] = False
+    governance_workspace().bind_tenant(config["agency_base_url"], confirm_legacy=values.get("confirmLegacyTenant") is True, expected_revision=values.get("expectedWorkspaceRevision"))
     temporary = CONFIG_PATH.with_suffix(".json.tmp")
     temporary.write_text(json.dumps(config, indent=2) + "\n", encoding="utf-8")
     temporary.replace(CONFIG_PATH)
@@ -1215,6 +1335,9 @@ def apply_current_group_governance(
             group["Reporting Inclusion"] = "Review"
             group["Mapping Status"] = site_source.get("Mapping Status", "Unmapped")
             group["Review Notes"] = site_source.get("Review Notes", "")
+        decision = site_source if site_mapping or not non_site else non_site
+        group["Mapping Method"] = decision.get("Mapping Method", "Group register")
+        group["Confidence"] = decision.get("Confidence", "Not rated")
         current.append(group)
     return current
 
@@ -1245,7 +1368,7 @@ def build_dashboard_payload(
     home_crosswalk = {
         str(row.get("Normalized Device Home Key") or "").strip(): {
             field: str(row.get(field) or "").strip()
-            for field in ("Site ID", "Component", "Region / AOR", "Mapping Status")
+            for field in ("Site ID", "Component", "Region / AOR", "Mapping Status", "Mapping Method", "Confidence", "Review Notes")
         }
         for row in home_crosswalk_rows
         if str(row.get("Normalized Device Home Key") or "").strip()
@@ -1360,28 +1483,30 @@ def build_dashboard_payload(
     crosswalk_review: list[dict[str, str]] = []
     for home in homes:
         home_key = str(home.get("Normalized Device Home Key") or "").strip()
-        if reviewed_site_mapping(home_crosswalk.get(home_key, {})):
-            continue
+        mapping = home_crosswalk.get(home_key, {})
+        reviewed = bool(reviewed_site_mapping(mapping))
         crosswalk_review.append({
             "sourceType": "Device Home",
+            "isReviewed": reviewed,
             "sourceId": str(home.get("Device Home Name (API)") or ""),
             "normalizedKey": str(home.get("Normalized Device Home Key") or ""),
-            "suggestedUnit": "Not yet reviewed",
-            "mappingMethod": "Unmapped",
-            "confidence": "Needs Review",
-            "reviewNotes": "Map the observed API name to a physical site and organizational AOR.",
+            "suggestedUnit": mapping.get("Site ID") if reviewed else "Not yet reviewed",
+            "mappingMethod": mapping.get("Mapping Method") or "Unmapped",
+            "confidence": mapping.get("Confidence") or "Needs Review",
+            "reviewNotes": mapping.get("Review Notes") or "Map the observed API name to a physical site and organizational AOR.",
         })
     for group in groups:
-        if str(group.get("Mapping Status") or "").casefold() in {"mapped", "classified", "registered non-site"}:
-            continue
+        reviewed = str(group.get("Mapping Status") or "").casefold() in {"mapped", "classified", "registered non-site"}
         crosswalk_review.append({
             "sourceType": "Axon Group",
+            "isReviewed": reviewed,
+            "relationshipType": "non-site" if reviewed and not group.get("Mapped Site ID") else "site",
             "sourceId": str(group.get("Group Name") or group.get("Axon Group ID") or ""),
             "externalGroupId": str(group.get("External Group ID") or ""),
             "normalizedKey": str(group.get("Axon Group ID") or ""),
             "suggestedUnit": str(group.get("Group Classification") or "Unclassified"),
-            "mappingMethod": "Group register",
-            "confidence": "Needs Review",
+            "mappingMethod": group.get("Mapping Method") or "Group register",
+            "confidence": group.get("Confidence") or "Not rated",
             "reviewNotes": str(group.get("Review Notes") or "Confirm whether this Group is site-based or non-site."),
         })
 
@@ -1443,7 +1568,7 @@ def build_dashboard_payload(
         "componentSummaries": component_summaries,
         "inventory": inventory[:inventory_limit] if inventory_limit is not None else inventory,
         "assignments": assignments[:assignment_limit] if assignment_limit is not None else assignments,
-        "crosswalkReview": crosswalk_review[:500],
+        "crosswalkReview": crosswalk_review,
         "groups": [
             {
                 "groupId": str(group.get("Axon Group ID") or ""),
@@ -1459,14 +1584,16 @@ def build_dashboard_payload(
         "truncated": {
             "inventory": len(inventory) > 500,
             "assignments": len(assignments) > 500,
-            "crosswalkReview": len(crosswalk_review) > 500,
+            "crosswalkReview": False,
             "groups": len(groups) > 500,
         },
     }
 
 
-class SessionState:
+class SessionState(TestCredentialSession):
     def __init__(self, client_factory: Callable[..., Any] = AxonClient) -> None:
+        self.init_test_credentials()
+        self.diagnostics = LocalDiagnostics()
         test_token = (
             os.environ.get("BWC_AXON_TEST_LAUNCH_TOKEN", "")
             if os.environ.get("BWC_AXON_TEST_MODE") == "1"
@@ -1505,6 +1632,7 @@ class SessionState:
 
     def close(self) -> None:
         with self._lock:
+            self.init_test_credentials()
             self._credentials = {"partner_id": "", "client_id": "", "client_secret": ""}
             self._rows = {}
             self._dashboard = None
@@ -1562,16 +1690,18 @@ class SessionState:
         return rows, activated_at, scopes, "partial" if rows else "illustrative"
 
     def set_credentials(self, partner_id: object, client_id: object, client_secret: object) -> None:
-        values = [str(value or "").strip() for value in (partner_id, client_id, client_secret)]
+        values = [str(partner_id or "").strip(), str(client_id or "").strip(), str(client_secret or "")]
         if not all(values):
             raise UserInputError("Partner / Agency ID, Client ID, and Client Secret are all required.")
         if any(any(ch in value for ch in "\r\n\0") for value in values):
             raise UserInputError("Credential values cannot contain line breaks or null characters.")
         with self._lock:
             self._credentials = {"partner_id": values[0], "client_id": values[1], "client_secret": values[2]}
+            self.init_test_credentials()
 
     def clear_credentials(self) -> None:
         with self._lock:
+            self.init_test_credentials()
             self._credentials = {"partner_id": "", "client_id": "", "client_secret": ""}
 
     def session_status(self) -> dict[str, Any]:
@@ -1586,7 +1716,8 @@ class SessionState:
             "dataMode": str((dashboard or {}).get("mode") or "illustrative"),
             "lastSyncAt": dashboard.get("lastSyncAt", "") if dashboard else "",
             "activeJob": active_job,
-            "credentialsPersisted": False,
+            "credentialsPersisted": bool(self._test_credential_origin),
+            **self.test_credential_status(),
             "workspaceRevision": self.workspace.revision(),
         }
 
@@ -1611,6 +1742,7 @@ class SessionState:
                 mode=mode,
             )
             dashboard["baselineScopes"] = baseline_scopes
+            dashboard["resourceFreshness"] = {item["resource"]: {key: item.get(key) for key in ("snapshotId", "activatedAt", "scope")} for item in operational_view["snapshots"] if item["scope"] == baseline_scopes.get(item["resource"])}
             with self._lock:
                 self._rows = copy.deepcopy(current_rows)
                 self._dashboard = copy.deepcopy(dashboard)
@@ -1632,6 +1764,7 @@ class SessionState:
                 "group": item["payload"].get("groupName", ""),
                 "location": item["payload"].get("location", ""),
                 "personnelAor": item["payload"].get("personnelAor", ""),
+                "confirmation": item["payload"].get("confirmation", {}),
             }
             for item in pending[:500]
         ]
@@ -1780,6 +1913,7 @@ class SessionState:
 
     def start_sync(self, body: dict[str, Any]) -> dict[str, Any]:
         with self._lock:
+            self.assert_credential_target(str(load_config()[0].get("agency_base_url") or ""))
             if not all(self._credentials.values()):
                 raise UserInputError("Session credentials are required before a live pull.")
             if self._active_job_id:
@@ -1865,6 +1999,7 @@ class SessionState:
             if not exists:
                 raise UserInputError("Save the Axon tenant URL before starting a live pull.")
             config = copy.deepcopy(config)
+            self.workspace.bind_tenant(config["agency_base_url"])
             config["keep_raw_json"] = False
             run_dir = self._temporary_dir / job_id
             run_dir.mkdir(parents=True, exist_ok=True)
@@ -1900,6 +2035,7 @@ class SessionState:
             devices_config["sync_params"] = params
 
             with self._lock:
+                self.assert_credential_target(config["agency_base_url"])
                 credentials = dict(self._credentials)
             client = self.client_factory(
                 agency_base_url=config["agency_base_url"],
@@ -1945,6 +2081,7 @@ class SessionState:
                     "rows": mapped,
                     "scope": resource_scope,
                     "source": "Axon API via Geographic Operations",
+                    "leaseId": leases[name],
                 })
                 resource_counts[name] = len(mapped)
                 output_path = run_dir / resource_config["output_csv"]
@@ -2049,12 +2186,12 @@ class SessionState:
             )
 
 
-class LocalAxonGeographicHandler(BaseHTTPRequestHandler):
+class LocalAxonGeographicHandler(DiagnosticHandlerMixin, BaseHTTPRequestHandler):
     server_version = "BWCGeographicAxon/1.0.0"
     state: SessionState
 
     def log_message(self, format_string: str, *args: Any) -> None:
-        sys.stdout.write(f"[local-ui] {self.command} {self.path.split('?', 1)[0]}\n")
+        pass
 
     def _valid_host(self) -> bool:
         host = (self.headers.get("Host") or "").lower()
@@ -2198,6 +2335,9 @@ class LocalAxonGeographicHandler(BaseHTTPRequestHandler):
         if path == "/api/workspace/revision":
             self._send_json(HTTPStatus.OK, {"success": True, "workspaceRevision": self.state.workspace.revision()})
             return
+        if path == "/api/support/diagnostics":
+            self._send_json(HTTPStatus.OK, self.state.diagnostics.snapshot())
+            return
         if path == "/api/review/targets":
             try:
                 query = parse_qs(parsed.query, keep_blank_values=True)
@@ -2280,6 +2420,9 @@ class LocalAxonGeographicHandler(BaseHTTPRequestHandler):
         path = urlparse(self.path).path
         try:
             body = self._read_json()
+            if path == "/api/review/relationships":
+                self._send_json(HTTPStatus.OK, create_review_relationship(body))
+                return
             if path == "/api/config":
                 self._send_json(HTTPStatus.OK, {"success": True, **save_public_config(body)})
                 return
@@ -2298,6 +2441,9 @@ class LocalAxonGeographicHandler(BaseHTTPRequestHandler):
                 self._send_json(HTTPStatus.ACCEPTED, {"success": True, **job})
                 return
             segments = [unquote(segment) for segment in path.split("/") if segment]
+            if len(segments) == 4 and segments[:2] == ["api", "crosswalks"] and segments[3] == "bulk":
+                self._send_json(HTTPStatus.OK, bulk_update_crosswalk(segments[2], body))
+                return
             if (
                 len(segments) == 5
                 and segments[:3] == ["api", "live", "sync"]
@@ -2323,9 +2469,9 @@ class LocalAxonGeographicHandler(BaseHTTPRequestHandler):
                 self._send_json(HTTPStatus.CREATED, {"success": True, **payload})
                 return
             self._error(HTTPStatus.NOT_FOUND, "Local API route not found.")
-        except CrosswalkConflictError as exc:
+        except (CrosswalkConflictError, RevisionConflict, RefreshLeaseConflict) as exc:
             self._error(HTTPStatus.CONFLICT, str(exc))
-        except UserInputError as exc:
+        except (UserInputError, ValueError) as exc:
             self._error(HTTPStatus.BAD_REQUEST, str(exc))
         except Exception as exc:
             self._error(HTTPStatus.INTERNAL_SERVER_ERROR, f"Local function failed: {exc}")
@@ -2393,6 +2539,7 @@ def main() -> int:
     parser.add_argument("--open", action="store_true", default=bool(getattr(sys, "frozen", False)), help="Open the local UI in the default browser.")
     parser.add_argument("--no-open", action="store_false", dest="open", help=argparse.SUPPRESS)
     parser.add_argument("--no-auto-port", action="store_false", dest="auto_port", help=argparse.SUPPRESS)
+    parser.add_argument("--no-test-credentials", action="store_true", help="Ignore the optional local testing credential file for this launch.")
     args, _unknown = parser.parse_known_args()
     instance_lock = SingleInstanceLock("geographic-operations")
     if not instance_lock.acquire():
@@ -2406,6 +2553,8 @@ def main() -> int:
         {"version": VERSION, "initializedGovernanceFiles": len(created)},
     )
     state = SessionState()
+    if not args.no_test_credentials and not getattr(sys, "frozen", False):
+        state.load_test_credentials(str(load_config()[0].get("agency_base_url") or ""))
     server = make_server(args.port, state, auto_port=args.auto_port)
     selected_port = int(server.server_address[1])
     url = f"http://127.0.0.1:{selected_port}/"
@@ -2414,7 +2563,9 @@ def main() -> int:
     print(f"Local address: {url}")
     if selected_port != args.port:
         print(f"Port {args.port} was unavailable; selected an available local loopback port.")
-    print("Credentials remain in this process. Completed normalized snapshots persist in the shared workspace.")
+    print("Local test credentials loaded (plaintext file retained)." if state.session_status()["testCredentialsLoaded"] else "Credentials are entered for this process only.")
+    if state.session_status()["credentialWarning"]:
+        print(state.session_status()["credentialWarning"])
     print("Axon operational resource calls are read-only GET requests.")
     print(f"Governance working directory: {CROSSWALK_ROOT}")
     if created:

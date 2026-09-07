@@ -85,6 +85,38 @@ class BackendServerTests(unittest.TestCase):
         self.assertNotIn("AGENCY-1234", rendered)
         self.assertEqual(status["partnerHint"], "…1234")
 
+    def test_local_test_profile_load_clear_and_tenant_guard(self):
+        from local_test_credentials import credential_path, write_profile, TestCredentialError
+        data = {"version": 1, "testingOnly": True, "agencyBaseUrl": "https://test-agency.evidence.com",
+                "partnerId": "SYNTHETIC-PARTNER", "clientId": "synthetic-file-client", "clientSecret": "synthetic-file-secret"}
+        with mock.patch.dict(os.environ, {"BWC_TEST_CREDENTIALS_FILE": ""}):
+            write_profile(credential_path(), data)
+            revision = self.state.workspace.revision()
+            self.state.load_test_credentials(data["agencyBaseUrl"])
+            self.assertTrue(self.state.session_status()["testCredentialsLoaded"])
+            self.assertEqual(revision, self.state.workspace.revision())
+            self.assertNotIn("synthetic-file-secret", json.dumps(self.state.session_status()))
+            with mock.patch.object(backend_server, "load_config", return_value=({"agency_base_url": data["agencyBaseUrl"]}, True)):
+                self.assertEqual(self.state.credential_env()["AXON_CLIENT_SECRET"], "synthetic-file-secret")
+            with mock.patch.object(backend_server, "load_config", return_value=({"agency_base_url": "https://other.example.test"}, True)):
+                with self.assertRaises(TestCredentialError):
+                    self.state.credential_env()
+            self.state.clear_credentials()
+            self.assertFalse(self.state.session_status()["testCredentialsLoaded"])
+            self.assertFalse(self.state.session_status()["configured"])
+            self.assertTrue(credential_path().exists())
+
+    def test_saved_credentials_never_approve_or_submit_an_unapproved_run(self):
+        from local_test_credentials import credential_path, write_profile
+        data = {"version": 1, "testingOnly": True, "agencyBaseUrl": "https://test-agency.evidence.com",
+                "partnerId": "SYNTHETIC-PARTNER", "clientId": "synthetic-client", "clientSecret": "synthetic-secret"}
+        with mock.patch.dict(os.environ, {"BWC_TEST_CREDENTIALS_FILE": ""}):
+            write_profile(credential_path(), data)
+            self.state.load_test_credentials(data["agencyBaseUrl"])
+        with mock.patch.object(self.state.workspace, "get_run", return_value={"revision": 1, "status": "Ready for Preview", "approval": None}):
+            with self.assertRaisesRegex(UserInputError, "Approve the current"):
+                backend_server.submit_next_run_chunk(self.state, "synthetic-run", {
+                    "expectedRevision": 1, "confirmWrite": True, "confirmTarget": True, "targetOrigin": data["agencyBaseUrl"]})
     def test_credentials_are_cleared(self):
         self.state.set_credentials("AGENCY-1234", "client", "secret")
         self.state.clear_credentials()

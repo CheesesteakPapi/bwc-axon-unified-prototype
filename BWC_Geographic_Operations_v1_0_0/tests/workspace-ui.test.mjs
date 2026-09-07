@@ -1,6 +1,13 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { loadWorkspace, devicePullNeedsScope } from "../src/workspaceUi.js";
+import { loadWorkspace, devicePullNeedsScope, effectiveDeviceScope } from "../src/workspaceUi.js";
+
+test("full scope clears every filter; tracked scope excludes custom status and Home", () => {
+  const filters={deviceModel:"TEST A,TEST B",deviceStatus:"LOST",deviceHomeId:"TEST-HOME"};
+  assert.deepEqual(effectiveDeviceScope("full",filters),{deviceModel:"",deviceStatus:"",deviceHomeId:""});
+  assert.deepEqual(effectiveDeviceScope("tracked",filters),{deviceModel:"TEST A,TEST B",deviceStatus:"",deviceHomeId:""});
+  assert.deepEqual(effectiveDeviceScope("custom",filters),filters);
+});
 
 test("a hanging dashboard and failed summary do not disable editors", async () => {
   const seen = [], errors = [];

@@ -17,6 +17,7 @@ import uuid
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from urllib.parse import urlsplit
 from typing import Any, Iterator, Sequence
 
 
@@ -90,6 +91,7 @@ class SharedWorkspace:
         self.path = Path(path or workspace_path()).resolve()
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self._lock = threading.RLock()
+        self._lease_stops: dict[str, threading.Event] = {}
         self._initialize()
 
     @contextmanager
@@ -260,6 +262,8 @@ class SharedWorkspace:
                 """
             )
             db.execute("BEGIN IMMEDIATE")
+            if "refresh_id" not in {row[1] for row in db.execute("PRAGMA table_info(refresh_leases)")}:
+                db.execute("ALTER TABLE refresh_leases ADD COLUMN refresh_id TEXT NOT NULL DEFAULT ''")
             self._audit_in_connection(db, "workspace", "workspace-opened", "success", {"schema": "3.1.0"})
             db.commit()
 
@@ -346,13 +350,13 @@ class SharedWorkspace:
         with self.connection() as db:
             db.execute("BEGIN IMMEDIATE")
             existing = db.execute("SELECT * FROM refresh_leases WHERE resource=?", (resource,)).fetchone()
-            if existing and existing["expires_at"] > utc_now() and existing["owner_id"] != owner_id:
+            if existing and existing["expires_at"] > utc_now():
                 db.rollback()
                 raise RefreshLeaseConflict(f"{resource} is already being refreshed by another local application.")
             db.execute("DELETE FROM refresh_leases WHERE resource=?", (resource,))
             db.execute(
-                "INSERT INTO refresh_leases(resource,owner_id,acquired_at,expires_at,scope_json) VALUES(?,?,?,?,?)",
-                (resource, owner_id, utc_now(), expires, canonical_json(scope)),
+                "INSERT INTO refresh_leases(resource,owner_id,acquired_at,expires_at,scope_json,refresh_id) VALUES(?,?,?,?,?,?)",
+                (resource, owner_id, utc_now(), expires, canonical_json(scope), refresh_id),
             )
             db.execute(
                 "INSERT INTO refresh_history(refresh_id,resource,owner_id,scope_json,status,started_at) VALUES(?,?,?,?,?,?)",
@@ -360,12 +364,66 @@ class SharedWorkspace:
             )
             self._audit_in_connection(db, owner_id, "refresh-lease-acquired", "success", {"resource": resource, "refreshId": refresh_id})
             db.commit()
+        stop = threading.Event()
+        self._lease_stops[refresh_id] = stop
+        def heartbeat() -> None:
+            try:
+                while not stop.wait(max(0.05, min(30, ttl_seconds / 3))):
+                    try:
+                        self.renew_refresh_lease(resource, owner_id, refresh_id, ttl_seconds)
+                    except Exception:
+                        # Fail closed: activation checks ownership and expiry again.
+                        return
+            finally:
+                self._lease_stops.pop(refresh_id, None)
+        threading.Thread(target=heartbeat, name="bwc-refresh-lease", daemon=True).start()
         return refresh_id
 
-    def release_refresh_lease(self, resource: str, owner_id: str, refresh_id: str, status: str, message: str = "", snapshot_id: str = "") -> None:
+    def renew_refresh_lease(self, resource: str, owner_id: str, refresh_id: str, ttl_seconds: int = 1800) -> None:
+        expires = (datetime.now(timezone.utc) + timedelta(seconds=ttl_seconds)).isoformat().replace("+00:00", "Z")
+        with self.connection() as db:
+            changed = db.execute(
+                "UPDATE refresh_leases SET expires_at=? WHERE resource=? AND owner_id=? AND refresh_id=? AND expires_at>?",
+                (expires, resource, owner_id, refresh_id, utc_now()),
+            ).rowcount
+        if changed != 1:
+            raise RefreshLeaseConflict("Refresh ownership expired or changed. The prior baseline was preserved.")
+
+    def tenant_status(self) -> dict[str, Any]:
+        with self.connection() as db:
+            row = db.execute("SELECT value FROM workspace_meta WHERE key='tenant_host'").fetchone()
+            legacy = db.execute("SELECT EXISTS(SELECT 1 FROM resource_snapshots) OR EXISTS(SELECT 1 FROM provisioning_runs)").fetchone()[0]
+            return {"tenantHost": row[0] if row else "", "legacyBindingRequired": bool(legacy and not row), "workspaceRevision": self._workspace_revision(db)}
+
+    def bind_tenant(self, url: str, *, confirm_legacy: bool = False, expected_revision: int | None = None) -> None:
+        parsed = urlsplit(url.strip())
+        host = (parsed.hostname or "").lower()
+        if parsed.scheme != "https" or not host or parsed.username or parsed.password or parsed.query or parsed.fragment or parsed.path not in ("", "/") or parsed.port not in (None, 443):
+            raise ValueError("Use a tenant HTTPS origin without credentials, path, query, or custom port.")
         with self.connection() as db:
             db.execute("BEGIN IMMEDIATE")
-            db.execute("DELETE FROM refresh_leases WHERE resource=? AND owner_id=?", (resource, owner_id))
+            bound = db.execute("SELECT value FROM workspace_meta WHERE key='tenant_host'").fetchone()
+            if bound:
+                if bound[0] != host:
+                    raise ValueError("This workspace is bound to another Axon tenant. Use a separate workspace; existing data has not been changed.")
+                return
+            legacy = db.execute("SELECT EXISTS(SELECT 1 FROM resource_snapshots) OR EXISTS(SELECT 1 FROM provisioning_runs)").fetchone()[0]
+            if legacy and (not confirm_legacy or expected_revision is None):
+                raise ValueError("Existing local data has no tenant binding. In connection settings, confirm that this data belongs to the entered tenant before continuing.")
+            if expected_revision is not None and self._workspace_revision(db) != int(expected_revision):
+                raise RevisionConflict("Workspace changed. Reload connection settings before confirming its tenant.")
+            db.execute("INSERT INTO workspace_meta(key,value) VALUES('tenant_host',?)", (host,))
+            self._increment_revision(db)
+            self._audit_in_connection(db, "local-operator", "tenant-bound", "success", {"legacyConfirmed": bool(legacy)})
+            db.commit()
+
+    def release_refresh_lease(self, resource: str, owner_id: str, refresh_id: str, status: str, message: str = "", snapshot_id: str = "") -> None:
+        stop = self._lease_stops.pop(refresh_id, None)
+        if stop:
+            stop.set()
+        with self.connection() as db:
+            db.execute("BEGIN IMMEDIATE")
+            db.execute("DELETE FROM refresh_leases WHERE resource=? AND owner_id=? AND refresh_id=?", (resource, owner_id, refresh_id))
             db.execute(
                 "UPDATE refresh_history SET status=?,finished_at=?,snapshot_id=?,message=? WHERE refresh_id=?",
                 (status, utc_now(), snapshot_id, message[:500], refresh_id),
@@ -384,9 +442,10 @@ class SharedWorkspace:
         rows: Sequence[dict[str, Any]],
         scope: dict[str, Any] | None = None,
         source: str = "Axon API",
+        *, lease_id: str = "",
     ) -> dict[str, Any]:
         return self.activate_snapshots_batch(
-            [{"resource": resource, "rows": rows, "scope": scope, "source": source}]
+            [{"resource": resource, "rows": rows, "scope": scope, "source": source, "leaseId": lease_id}]
         )[0]
 
     def activate_snapshots_batch(
@@ -431,6 +490,7 @@ class SharedWorkspace:
                     "snapshotId": uuid.uuid4().hex,
                     "pulledAt": utc_now(),
                     "sha256": value_hash(normalized_rows),
+                    "leaseId": entry.get("leaseId", ""),
                 }
             )
 
@@ -438,6 +498,10 @@ class SharedWorkspace:
             db.execute("BEGIN IMMEDIATE")
             try:
                 for item in prepared:
+                    lease = db.execute("SELECT refresh_id,expires_at FROM refresh_leases WHERE resource=?", (item["resource"],)).fetchone()
+                    if item["leaseId"] or lease:
+                        if not lease or lease["refresh_id"] != item["leaseId"] or lease["expires_at"] <= utc_now():
+                            raise RefreshLeaseConflict("Snapshot activation rejected: refresh ownership is no longer valid.")
                     db.execute(
                         "INSERT INTO resource_snapshots(snapshot_id,resource,scope_key,scope_json,status,row_count,content_hash,pulled_at,source) VALUES(?,?,?,?,?,?,?,?,?)",
                         (
@@ -542,40 +606,67 @@ class SharedWorkspace:
                 )
 
     def _confirm_user_overlays(
-        self,
-        db: sqlite3.Connection,
-        resource: str,
-        scope: dict[str, Any],
-        rows: Sequence[dict[str, Any]],
-        activated_at: str,
+        self, db: sqlite3.Connection, resource: str, scope: dict[str, Any],
+        rows: Sequence[dict[str, Any]], activated_at: str,
     ) -> int:
         if resource != "Users" or scope.get("type") != "full":
             return 0
-        snapshot_emails = {
-            str(row.get("Email") or row.get("EMAIL") or row.get("email") or "").strip().casefold()
-            for row in rows
-            if str(row.get("Email") or row.get("EMAIL") or row.get("email") or "").strip()
+        aliases = {
+            "email": ("Email", "EMAIL", "email"),
+            "externalId": ("External ID", "EXTERNAL_ID", "externalId"),
+            "role": ("Role", "ROLE", "role"),
+            "status": ("User Status", "Status", "STATUS", "status"),
+            "location": ("Location", "LOCATION", "location"),
+            "supervisorEmail": ("Supervisor Email", "SUPERVISOR_EMAIL", "supervisorEmail"),
+            "firstName": ("First Name", "FIRST_NAME", "firstName"),
+            "lastName": ("Last Name", "LAST_NAME", "lastName"),
+            "username": ("Username", "UserName", "USERNAME", "username"),
+            "badgeNumber": ("Badge Number", "Badge ID", "BADGE_NUMBER", "badgeNumber"),
+            "phone": ("Phone", "PHONE", "phone"),
+            "rank": ("Rank", "RANK", "rank"),
         }
-        snapshot_external_ids = {
-            str(row.get("External ID") or row.get("EXTERNAL_ID") or row.get("externalId") or "").strip().casefold()
-            for row in rows
-            if str(row.get("External ID") or row.get("EXTERNAL_ID") or row.get("externalId") or "").strip()
-        }
-        overlays = db.execute(
-            "SELECT overlay_id,payload_json FROM pending_overlays WHERE entity_type='User' AND state='Submitted—awaiting confirmation'"
-        ).fetchall()
-        confirmed_overlay_count = 0
+        def normalized(record, field):
+            for key in aliases[field]:
+                if key in record:
+                    return str(record[key] or "").strip().casefold()
+            return None
+        email_index: dict[str, set[int]] = {}
+        external_index: dict[str, set[int]] = {}
+        for index, row in enumerate(rows):
+            email_index.setdefault(normalized(row, "email"), set()).add(index)
+            external_index.setdefault(normalized(row, "externalId"), set()).add(index)
+        completed_rows: dict[tuple[str, int], set[str]] = {}
+        overlays = db.execute("SELECT * FROM pending_overlays WHERE entity_type='User' AND state='Submitted—awaiting confirmation'").fetchall()
+        count = 0
         for overlay in overlays:
-            payload = json.loads(overlay["payload_json"])
-            email = str(payload.get("email") or "").strip().casefold()
-            external_id = str(payload.get("externalId") or "").strip().casefold()
-            if (email and email in snapshot_emails) or (external_id and external_id in snapshot_external_ids):
-                db.execute(
-                    "UPDATE pending_overlays SET state='Confirmed',updated_at=? WHERE overlay_id=?",
-                    (activated_at, overlay["overlay_id"]),
-                )
-                confirmed_overlay_count += 1
-        return confirmed_overlay_count
+            proposed = json.loads(overlay["payload_json"])
+            run_key = (overlay["run_id"], overlay["run_revision"])
+            if run_key not in completed_rows:
+                chunks = db.execute("SELECT row_ids_json FROM submission_chunks WHERE run_id=? AND run_revision=? AND kind='users' AND status='completed'", run_key).fetchall()
+                completed_rows[run_key] = {row_id for chunk in chunks for row_id in json.loads(chunk["row_ids_json"])}
+            if proposed.get("rowId") not in completed_rows[run_key]:
+                continue
+            email = str(proposed.get("email") or "").strip().casefold()
+            external_id = str(proposed.get("externalId") or "").strip().casefold()
+            # Both identities must resolve uniquely to the same record.
+            matches = email_index.get(email, set()) | external_index.get(external_id, set())
+            if not email or not external_id or len(matches) != 1:
+                continue
+            current = rows[next(iter(matches))]
+            if normalized(current, "email") != email or normalized(current, "externalId") != external_id:
+                continue
+            required = {field for field in aliases if str(proposed.get(field) or "").strip()}
+            # Blank proposed values can be intentional updates and must reconcile too.
+            difference_fields = {"Role": "role", "Location": "location", "Status": "status", "Supervisor Email": "supervisorEmail"}
+            required.update(difference_fields[d["field"]] for d in proposed.get("differences", []) if d.get("field") in difference_fields)
+            mismatched = [field for field in required if normalized(current, field) is not None and normalized(current, field) != str(proposed.get(field) or "").strip().casefold()]
+            unobservable = [field for field in required if normalized(current, field) is None]
+            proposed["confirmation"] = {"checkedAt": activated_at, "mismatchedFields": sorted(mismatched), "unobservableFields": sorted(unobservable), "jobCompleted": True}
+            confirmed = not mismatched and not unobservable
+            db.execute("UPDATE pending_overlays SET state=?,payload_json=?,updated_at=? WHERE overlay_id=?",
+                       ("Confirmed" if confirmed else "Submitted—awaiting confirmation", canonical_json(proposed), activated_at, overlay["overlay_id"]))
+            count += int(confirmed)
+        return count
 
     def active_snapshot(self, resource: str, prefer_full: bool = True) -> dict[str, Any] | None:
         with self.connection() as db:
@@ -782,6 +873,13 @@ class SharedWorkspace:
                 "SELECT chunk_id,run_revision,kind,ordinal,row_ids_json,payload_hash,status,dependency_chunk_ids_json,axon_job_id,result_json FROM submission_chunks WHERE run_id=? AND run_revision=? ORDER BY kind,ordinal",
                 (run_id, record["revision"]),
             ).fetchall()
+            overlays = db.execute("SELECT state,payload_json FROM pending_overlays WHERE run_id=? AND run_revision=? AND entity_type='User'", (run_id, record["revision"])).fetchall()
+        record["confirmationSummary"] = {
+            "confirmed": sum(item["state"] == "Confirmed" for item in overlays),
+            "awaiting": sum(item["state"] == "Submitted—awaiting confirmation" for item in overlays),
+            "unobservableFields": sorted({field for item in overlays for field in json.loads(item["payload_json"]).get("confirmation", {}).get("unobservableFields", [])}),
+            "mismatchedFields": sorted({field for item in overlays for field in json.loads(item["payload_json"]).get("confirmation", {}).get("mismatchedFields", [])}),
+        }
         record["history"] = [
             {"revision": item["revision"], "event": item["event_type"], "reason": item["reason"], "actor": item["actor"], "createdAt": item["created_at"]}
             for item in revisions

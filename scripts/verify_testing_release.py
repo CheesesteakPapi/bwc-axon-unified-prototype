@@ -11,7 +11,7 @@ import zipfile
 from pathlib import Path
 
 SMOKE = r'''
-import http.client, json, socket, threading
+import http.client, json, os, socket, threading
 import backend_server as backend
 if hasattr(backend, "initialize_governance_working_files"):
     backend.initialize_governance_working_files()
@@ -38,7 +38,7 @@ try:
     connection.request("GET", "/api/health", headers={"Cookie": cookie})
     response = connection.getresponse()
     payload = json.loads(response.read())
-    assert response.status == 200 and backend.VERSION == "3.2.0"
+    assert response.status == 200 and backend.VERSION == os.environ["BWC_EXPECTED_RELEASE_VERSION"]
     connection.request("GET", "/", headers={"Cookie": cookie})
     response = connection.getresponse()
     html = response.read().decode()
@@ -73,7 +73,7 @@ def main():
         root = target / "BWC32"
         for path in root.rglob("*.py"):
             compile(path.read_bytes(), str(path.relative_to(root)), "exec")
-        env = {**os.environ, "BWC_AXON_DATA_ROOT": str(target / "runtime"),
+        env = {**os.environ, "BWC_EXPECTED_RELEASE_VERSION": manifest["version"], "BWC_AXON_DATA_ROOT": str(target / "runtime"),
                "BWC_SHARED_WORKSPACE_PATH": str(target / "runtime/shared/shared_workspace.sqlite3")}
         # Source setup only; no tenant calls or browser launch.
         if sys.platform == "darwin":

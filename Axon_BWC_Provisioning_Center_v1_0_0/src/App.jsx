@@ -1,4 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
+import { SyncHealth } from "../../ui/SyncHealth.jsx";
+import { BulkChanges } from "../../ui/BulkChanges.jsx";
+import { BULK_USER_FIELDS, previewBulkUsers } from "./bulkReview.js";
 import { localApi } from "./api.js";
 import { TaskHome, TaskNavigation } from "../../ui/TaskHome.jsx";
 import "../../ui/theme.css";
@@ -117,20 +120,40 @@ function ConnectionPanel({ config, session, onSaved }) {
     setSaveError("");
     setBusy(true);
     try {
-      const savedConfig = await localApi.saveConfig(values);
+      const savedConfig = await localApi.saveConfig({...values,expectedWorkspaceRevision:config.workspaceRevision});
       let savedSession = session;
       if (values.partnerId || values.clientId || values.clientSecret) savedSession = await localApi.saveCredentials(values);
       onSaved(savedConfig, savedSession);
       setValues((current) => ({ ...current, partnerId: "", clientId: "", clientSecret: "" }));
     } catch (error) { setSaveError(error.message); } finally { setBusy(false); }
   }
-  return <details className="connection-panel"><summary><span className={`dot ${session.configured ? "on" : ""}`} /> Axon connection · {session.configured ? `active ${session.partnerHint}` : "not configured"}</summary><div className="connection-grid">
+  return <details className="connection-panel"><summary><span className={`dot ${session.configured ? "on" : ""}`} /> Axon connection · {session.configured ? `credentials loaded ${session.partnerHint}` : "not configured"}</summary><div className="connection-grid">
+    {session.credentialWarning && <p role="alert">{session.credentialWarning}</p>}
+    {session.testCredentialsLoaded && <p>Local test credential file loaded. Loading the file does not verify access with Axon. Leave credential fields blank to keep it. The plaintext file remains after exit; clearing a session does not delete it.</p>}
+    {config.legacyBindingRequired && <label className="checkbox-line"><input type="checkbox" checked={Boolean(values.confirmLegacyTenant)} onChange={e=>setValues({...values,confirmLegacyTenant:e.target.checked})} /> I confirm the existing local data belongs to this tenant (one-time binding).</label>}
+    {config.tenantHost && <p>Workspace bound to {config.tenantHost}.</p>}
     <label><span>Tenant HTTPS URL</span><input value={values.agencyBaseUrl} onChange={(event) => setValues({ ...values, agencyBaseUrl: event.target.value })} placeholder="https://your-tenant.evidence.com" /></label>
     <label><span>Partner / Agency ID</span><input value={values.partnerId} onChange={(event) => setValues({ ...values, partnerId: event.target.value })} /></label>
     <label><span>Client ID</span><input value={values.clientId} onChange={(event) => setValues({ ...values, clientId: event.target.value })} /></label>
     <label><span>Client secret</span><input type="password" value={values.clientSecret} onChange={(event) => setValues({ ...values, clientSecret: event.target.value })} /></label>
     <label className="check"><input type="checkbox" checked={values.writeOperationsEnabled} onChange={(event) => setValues({ ...values, writeOperationsEnabled: event.target.checked })} /><span>Enable deliberate Axon write operations</span></label>
     <label className="check"><input type="checkbox" checked={values.groupFileFieldConfirmed} onChange={(event) => setValues({ ...values, groupFileFieldConfirmed: event.target.checked })} /><span>Authorized Group import field confirmed</span></label>
+    <button className="secondary" type="button" disabled={busy} onClick={async () => {
+      setBusy(true);
+      try {
+        onSaved(await localApi.config(), session);
+        setValues(current => ({ ...current, confirmLegacyTenant: false }));
+        setSaveError("");
+      } catch {
+        setSaveError("Settings could not reload. Keep the launcher open and retry.");
+      } finally { setBusy(false); }
+    }}>Reload settings</button>
+    <button className="secondary" type="button" disabled={busy || !session.configured} onClick={async () => {
+      setBusy(true);
+      try { onSaved(config, await localApi.clearCredentials()); setSaveError(""); }
+      catch (error) { setSaveError(error.message); }
+      finally { setBusy(false); }
+    }}>Clear session credentials (keep file)</button>
     <button className="secondary" type="button" disabled={busy} onClick={save}>{busy ? "Saving…" : "Save local connection"}</button>
   </div>{saveError && <p role="alert">{saveError}</p>}<p className="muted">Credentials remain in this Python process and are never written to the shared workspace.</p></details>;
 }
@@ -142,8 +165,9 @@ function RefreshPanel({ config, session, workspace, job, form, setForm, onStart,
     <p>Refresh here or in Geographic Operations. A shared lease prevents duplicate resource pulls, and activation occurs only after a complete validated result.</p>
     <div className="refresh-grid">
       <label><span>Resource</span><select value={form.resource} onChange={(event) => setForm({ ...form, resource: event.target.value })} disabled={running}>{["Users", "Groups", "Devices", "DeviceHomes"].map((value) => <option key={value}>{value}</option>)}</select></label>
-      {form.resource === "Devices" && <><label><span>Model string(s)</span><input value={form.model} onChange={(event) => setForm({ ...form, model: event.target.value })} placeholder="Single model or comma-separated" disabled={running} /></label><label><span>Device status</span><input value={form.status2} onChange={(event) => setForm({ ...form, status2: event.target.value })} placeholder="Exact status2 value" disabled={running} /></label><label><span>Device Home ID</span><input value={form.homeId} onChange={(event) => setForm({ ...form, homeId: event.target.value })} placeholder="Exact home ID" disabled={running} /></label></>}
+      {form.resource === "Devices" && <><label><span>Device scope</span><select value={form.scope || "filtered"} disabled={running} onChange={e=>setForm({...form,scope:e.target.value})}><option value="filtered">Filtered devices</option><option value="full">Full inventory — all models</option></select></label><label><span>Model string(s)</span><input value={form.model} onChange={(event) => setForm({ ...form, model: event.target.value })} placeholder="Single model or comma-separated" disabled={running || form.scope === "full"} /></label><label><span>Device status</span><input value={form.status2} onChange={(event) => setForm({ ...form, status2: event.target.value })} placeholder="Exact status2 value" disabled={running || form.scope === "full"} /></label><label><span>Device Home ID</span><input value={form.homeId} onChange={(event) => setForm({ ...form, homeId: event.target.value })} placeholder="Exact home ID" disabled={running || form.scope === "full"} /></label></>}
     </div>
+    {form.resource === "Devices" && <p>{form.scope === "full" ? "Full inventory ignores all model, status and Home fields above. All devices will be requested." : "Only devices matching the stated filters will be requested."}</p>}
     <div className="snapshot-list">{workspace.snapshots?.map((snapshot) => <span key={snapshot.snapshotId}><strong>{snapshot.resource}</strong> · {snapshot.scope?.type || "unknown"} · {snapshot.rowCount.toLocaleString()} rows · {formatTime(snapshot.activatedAt)}</span>)}</div>
     {job && <div className={`refresh-state ${job.status}`}><strong>{job.resource} · {job.status}</strong><span>{job.message}</span>{job.scope?.type === "filtered" && <small>Filtered Devices data remains separate from the full baseline.</small>}</div>}
     <div className="action-row"><button className="primary" type="button" onClick={onStart} disabled={running || !session.configured}>{running ? "Refreshing…" : `Refresh ${form.resource}`}</button>{running && <button className="secondary" type="button" onClick={onCancel}>Cancel safely</button>}<span>{session.configured ? "Credentials are available in this process only." : "Open Axon connection below before refreshing."}</span></div>
@@ -152,6 +176,8 @@ function RefreshPanel({ config, session, workspace, job, form, setForm, onStart,
 }
 
 export function App() {
+  const [syncHealth, setSyncHealth] = useState({error:false,checkedAt:""});
+  const [retrySync,setRetrySync] = useState(0);
   const [run, setRun] = useState(null);
   const [view, setView] = useState("home");
   const [roleOptions, setRoleOptions] = useState([]);
@@ -170,10 +196,11 @@ export function App() {
   const [drafts, setDrafts] = useState({});
   const [selected, setSelected] = useState(new Set());
   const [changeReason, setChangeReason] = useState("");
-  const [bulkField, setBulkField] = useState("role");
-  const [bulkValue, setBulkValue] = useState("");
+  const [bulkDraftDirty, setBulkDraftDirty] = useState(false);
   const [existingReviewOpen, setExistingReviewOpen] = useState(false);
   const [confirmAgency, setConfirmAgency] = useState("");
+  const [confirmTarget, setConfirmTarget] = useState(false);
+  useEffect(() => { setConfirmTarget(false); setConfirmAgency(""); }, [run?.revision, config.agencyBaseUrl, session.credentialSource]);
   const [refreshForm, setRefreshForm] = useState({ resource: "Users", model: "", status2: "", homeId: "" });
   const [refreshJob, setRefreshJob] = useState(null);
   const [busy, setBusy] = useState(false);
@@ -196,6 +223,7 @@ export function App() {
     const timer = window.setInterval(async () => {
       try {
         const next = await localApi.workspace();
+        setSyncHealth({error:false,checkedAt:new Date().toISOString()});
         if (next.workspaceRevision !== workspace.workspaceRevision) {
           setWorkspace(next);
           setGroupOptions((await localApi.groupOptions()).groups || []);
@@ -205,10 +233,10 @@ export function App() {
             setRun(refreshed.run);
           }
         }
-      } catch { /* transient local poll failures surface on the next user action */ }
+      } catch { setSyncHealth(current=>({...current,error:true})); }
     }, 4000);
     return () => window.clearInterval(timer);
-  }, [workspace.workspaceRevision, run?.runId, changedRows.length]);
+  }, [workspace.workspaceRevision, run?.runId, changedRows.length, retrySync]);
 
   useEffect(() => {
     if (!refreshJob?.jobId || refreshJob.status !== "running") return undefined;
@@ -228,7 +256,9 @@ export function App() {
   async function startRefresh() {
     setError(""); setMessage("");
     try {
-      const result = await localApi.startRefresh({ resource: refreshForm.resource, filters: { model: refreshForm.model, status2: refreshForm.status2, homeId: refreshForm.homeId } });
+      const filters = refreshForm.scope === "full" ? {} : { model: refreshForm.model, status2: refreshForm.status2, homeId: refreshForm.homeId };
+      if (refreshForm.resource === "Devices" && refreshForm.scope !== "full" && !Object.values(filters).some(v=>String(v || "").trim())) throw Error("Enter a device filter or explicitly select Full inventory.");
+      const result = await localApi.startRefresh({ resource: refreshForm.resource, filters });
       setRefreshJob(result.job);
     } catch (requestError) { setError(requestError.message); }
   }
@@ -281,32 +311,21 @@ export function App() {
     finally { setBusy(false); setEntraToken(""); }
   }
 
-  async function saveEdits(extraEdits = []) {
-    if (!changeReason.trim()) { setError("Enter a reason for the assignment change."); return; }
+  async function saveEdits(extraEdits = [], reason = changeReason) {
+    if (!reason.trim()) { setError("Enter a reason for the assignment change."); return; }
     const edits = [...changedRows.map(([rowId, changes]) => ({ rowId, changes })), ...extraEdits];
     if (!edits.length) { setError("Change at least one assignment field first."); return; }
     setBusy(true); setError("");
     try {
-      const result = await localApi.editRun(run.runId, { expectedRevision: run.revision, edits, reason: changeReason });
-      setRun(result.run); setStep(stepForRun(result.run)); setDrafts({}); setSelected(new Set()); setBulkValue(""); setExistingReviewOpen(false); setMessage("Revision saved. Dependencies, strict records, validation, and chunks were regenerated automatically.");
+      const result = await localApi.editRun(run.runId, { expectedRevision: run.revision, edits, reason });
+      setRun(result.run); setStep(stepForRun(result.run)); setDrafts({}); setSelected(new Set()); setExistingReviewOpen(false); setMessage("Revision saved. Dependencies, strict records, validation, and chunks were regenerated automatically.");
       setWorkspace(await localApi.workspace());
-    } catch (requestError) { setError(requestError.message); }
+    } catch (requestError) { setError(requestError.message); if (extraEdits.length) throw requestError; }
     finally { setBusy(false); }
   }
 
-  function applyBulk() {
-    if (!selected.size || (bulkField !== "groupName" && !bulkValue.trim())) { setError("Select at least one user and enter a bulk value. Group may be intentionally left blank."); return; }
-    const group = groupOptions.find((option) => option.externalId === bulkValue);
-    const changes = bulkField === "groupName"
-      ? { groupName: group?.name || "", groupExternalId: group?.externalId || "" }
-      : { [bulkField]: bulkValue };
-    const preview = [...selected].map(rowId => { const row = run.rows.find(item => item.rowId === rowId); return `${row.email}: ${row[bulkField] || "blank"} → ${bulkField === "groupName" ? changes.groupName || "blank" : bulkValue}`; });
-    if (!window.confirm(`Apply this change to ${selected.size} selected users?\n${preview.slice(0, 10).join("\n")}${preview.length > 10 ? "\nAdditional selected users will receive the same change." : ""}\nReason: ${changeReason || "Required before saving"}`)) return;
-    saveEdits([...selected].map((rowId) => ({ rowId, changes })));
-  }
-
   async function approve() {
-    if (changedRows.length) { setError("Save or discard your edits before approving this preview."); return; }
+    if (changedRows.length || bulkDraftDirty) { setError("Save or discard your edits before approving this preview."); return; }
     setBusy(true); setError("");
     try {
       const count = run.validation.updateCount || 0;
@@ -317,10 +336,10 @@ export function App() {
   }
 
   async function submitNext() {
-    if (changedRows.length || !approved) { setError("Save edits and approve the current revision before submission."); return; }
+    if (changedRows.length || bulkDraftDirty || !approved) { setError("Save edits and approve the current revision before submission."); return; }
     setBusy(true); setError("");
     try {
-      const result = await localApi.submitNext(run.runId, { expectedRevision: run.revision, confirmWrite: true, confirmAgency });
+      const result = await localApi.submitNext(run.runId, { expectedRevision: run.revision, confirmWrite: true, confirmAgency, confirmTarget, targetOrigin: session.testCredentialTarget });
       setRun(result.run); setStep(4); setConfirmAgency(""); setMessage(`Submitted ${result.submittedChunk} once. Axon job ${result.axonJobId} is now being tracked.`);
     } catch (requestError) { setError(requestError.message); }
     finally { setBusy(false); }
@@ -336,7 +355,7 @@ export function App() {
   }
 
   async function exportPackage() {
-    if (changedRows.length) { setError("Save or discard edits before exporting the saved revision."); return; }
+    if (changedRows.length || bulkDraftDirty) { setError("Save or discard edits before exporting the saved revision."); return; }
     setBusy(true); setError("");
     try {
       const result = await localApi.exportRun(run.runId, run.revision);
@@ -347,36 +366,49 @@ export function App() {
   }
 
   function newRun() {
-    if (changedRows.length) { setError("Save or discard edits before starting another run."); return; }
+    if (changedRows.length || bulkDraftDirty) { setError("Save or discard edits before starting another run."); return; }
     setView("people");
     setRun(null); setStep(0); setRows([{ id: crypto.randomUUID(), Email: "", Role: "", "Group Name": "" }]); setIntakeFile(null); setDirectoryFile(null); setDetection(null); setColumnMapping({}); setDrafts({}); setSelected(new Set()); setError(""); setMessage("");
   }
 
   function navigate(next) {
-    if (busy || changedRows.length) { setError("Save or discard your edits before leaving this task."); return; }
+    if (busy || changedRows.length || bulkDraftDirty) { setError("Save or discard your edits before leaving this task."); return; }
     setView(next);
     window.setTimeout(() => document.getElementById("main-content")?.focus(), 0);
   }
   useEffect(() => {
-    function warn(event) { if (changedRows.length) { event.preventDefault(); event.returnValue = ""; } }
+    function warn(event) { if (changedRows.length || bulkDraftDirty) { event.preventDefault(); event.returnValue = ""; } }
     window.addEventListener("beforeunload", warn);
     return () => window.removeEventListener("beforeunload", warn);
-  }, [changedRows.length]);
+  }, [changedRows.length, bulkDraftDirty]);
   useEffect(() => { setExistingReviewOpen(false); }, [run?.revision]);
+
+  const bulkUserPanel = <BulkChanges count={selected.size}
+    fields={Object.keys(BULK_USER_FIELDS)}
+    options={{ Role: roleOptions, Group: groupOptions.map(g => ({value:g.externalId,label:groupOptionLabel(g)})),
+      "Job category":["Standard User","First-Line Supervisor","Senior/Second-Line Supervisor"] }}
+    signature={JSON.stringify([run?.runId,run?.revision,[...selected].sort()])}
+    disabled={busy || !!changedRows.length} onDirtyChange={setBulkDraftDirty}
+    onPreview={changes => previewBulkUsers(run, selected, changes, groupOptions)}
+    onApply={async (changes, reason, preview) => {
+      if (preview.runId !== run.runId || preview.revision !== run.revision) throw new Error("This run changed. Preview the bulk changes again.");
+      await saveEdits(preview.edits, reason);
+    }} />;
 
   return <div className="app">
     <a className="skip-link" href="#main-content">Skip to main content</a>
     <TaskNavigation items={[["home","Home"],["people","People"],["setup","Setup & rules"]]} current={view} onNavigate={navigate} help={() => navigate("help")} />
     <datalist id="approved-roles">{roleOptions.map(role => <option key={role} value={role} />)}</datalist>
+    <SyncHealth error={syncHealth.error} checkedAt={syncHealth.checkedAt} onRetry={()=>setRetrySync(v=>v+1)} loadDiagnostics={localApi.supportDiagnostics}/>
     <main id="main-content" tabIndex="-1">
       {view === "home" && <TaskHome description="Add or update accounts. Review every change before submitting to Axon." tasks={[
         {title:"Add or update people",description:"Start with email and role. Group assignment is optional.",action:"Start a user list",onClick:newRun,primary:true},
         {title:"Review your current list",description:run ? `Revision ${run.revision} · ${run.status}` : "Your saved provisioning run will appear here.",action:run ? "Continue review" : "Add people",onClick:() => navigate("people")},
         {title:"Setup & rules",description:"Refresh saved Axon data and configure this process's connection.",action:"Open setup",onClick:() => navigate("setup")}
       ]}><section><h2>Continue your work</h2><p>{run ? `${run.rows.length} people · ${run.status}` : "No saved user list yet."}</p><p>Approval and submission are separate actions.</p>{run && <button className="secondary" onClick={() => navigate("people")}>Continue review</button>}</section><section><h2>Saved data</h2><p>{workspace.snapshots?.length || 0} saved resource scope(s)</p><button className="text-button" onClick={() => navigate("setup")}>View refresh details</button></section></TaskHome>}
-      {view === "help" && <section className="panel"><h2>Provisioning help</h2><p>Add Users → Enrich → Review Exceptions → Preview → Submit → Track.</p><p>Only Email and Role are required to start. Optional location, job-category and Group mapping warnings do not block account creation.</p><p>Use Geographic Operations to edit Allowed Axon roles and other shared rules under Setup & rules. Start it with Start-Geographic-Prototype.cmd on Windows, or its Python launcher on macOS. It shares data, not credentials.</p><button className="secondary" onClick={() => navigate("people")}>Go to people</button></section>}
-      {view === "setup" && <><h2>Saved data & connection</h2><p>Manage shared snapshots here. Edit role and mapping tables in Geographic Operations → Setup & rules.</p><RefreshPanel config={config} session={session} workspace={workspace} job={refreshJob} form={refreshForm} setForm={setRefreshForm} onStart={startRefresh} onCancel={cancelRefresh} onConnection={(nextConfig, nextSession) => { setConfig(nextConfig); setSession(nextSession); setMessage("Connection settings saved. Credentials remain in process memory."); }} /></>}
-      {view === "people" && <nav className="stepper" aria-label="Provisioning steps">{STEPS.map((label,index) => <button key={label} type="button" aria-current={index === step ? "step" : undefined} className={index === activeStep ? "active" : ""} disabled={busy || (!run && index > 0)} onClick={() => { if (changedRows.length) { setError("Save or discard edits before changing steps."); return; } setStep(index); }}><span>{index+1}</span>{label}</button>)}</nav>}
+      {view === "help" && <section className="panel"><h2>Provisioning help</h2><p>Add Users → Enrich → Review Exceptions → Preview → Submit → Track.</p><p>Only Email and Role are required to start. Optional location, job-category and Group mapping warnings do not block account creation.</p><p>Use Geographic Operations to edit Allowed Axon roles and other shared rules under Setup & rules. Start it with Start-Geographic-Prototype.cmd on Windows, or its Python launcher on macOS. Both apps share saved data. An optional local testing file can supply credentials independently to each process.</p><button className="secondary" onClick={() => navigate("people")}>Go to people</button></section>}
+      {view === "setup" && <><h2>Saved data & connection</h2><p>Manage shared snapshots here. Edit role and mapping tables in Geographic Operations → Setup & rules.</p><RefreshPanel config={config} session={session} workspace={workspace} job={refreshJob} form={refreshForm} setForm={setRefreshForm} onStart={startRefresh} onCancel={cancelRefresh} onConnection={(nextConfig, nextSession) => { setConfig(nextConfig); setSession(nextSession); setMessage("Connection settings saved. Session ready. Credentials are checked by Axon only when a live action runs."); }} /></>}
+      {view === "people" && <nav className="stepper" aria-label="Provisioning steps">{STEPS.map((label,index) => <button key={label} type="button" aria-current={index === step ? "step" : undefined} className={index === activeStep ? "active" : ""} disabled={busy || (!run && index > 0)} onClick={() => { if (changedRows.length || bulkDraftDirty) { setError("Save or discard edits before changing steps."); return; } setStep(index); }}><span>{index+1}</span>{label}</button>)}</nav>}
       {message && <div className="banner success" role="status">{message}<button type="button" onClick={() => setMessage("")}>×</button></div>}
       {error && <div className="banner error" role="alert">{error}<button type="button" onClick={() => setError("")}>×</button></div>}
 
@@ -396,25 +428,26 @@ export function App() {
         <div className="action-row"><button className="primary" type="button" disabled={busy} onClick={startRun}>{busy ? "Working…" : "Enrich and continue"}</button><span>Normalize → exact directory match → map → generate → validate</span></div>
       </section>}
 
-      {view === "people" && step === 1 && run && <section className="panel wide-panel"><div className="panel-heading"><div><span className="kicker">Step 2</span><h2>Review exceptions</h2><p>Identity values remain read-only. Correct source identity through reconciliation; edit only governed assignment fields here.</p></div><button className="secondary" type="button" disabled={busy || !!changedRows.length} onClick={() => setStep(0)}>Return to intake</button></div><SummaryCards validation={run.validation} />
-        <div className="bulk-bar"><strong>Bulk edit {selected.size} selected</strong><select value={bulkField} onChange={(event) => { setBulkField(event.target.value); setBulkValue(""); }}>{ASSIGNMENT_FIELDS.map(([key, label]) => <option value={key} key={key}>{label}</option>)}</select>{bulkField === "groupName" ? <select aria-label="Bulk Group" value={bulkValue} onChange={(event) => setBulkValue(event.target.value)} disabled={busy}><option value="">Clear Group assignment</option>{groupOptions.map((option) => <option value={option.externalId} key={`${option.externalId}:${option.name}`}>{groupOptionLabel(option)}</option>)}</select> : <input value={bulkValue} onChange={(event) => setBulkValue(event.target.value)} placeholder="New governed value" />}<label className="change-reason"><span>Reason for change (required)</span><input value={changeReason} onChange={(event) => setChangeReason(event.target.value)} placeholder="Explain the basis for this change" /></label><button className="secondary" type="button" onClick={applyBulk} disabled={busy}>Apply and revalidate</button></div>
+      {view === "people" && step === 1 && run && <section className="panel wide-panel"><div className="panel-heading"><div><span className="kicker">Step 2</span><h2>Review exceptions</h2><p>Identity values remain read-only. Correct source identity through reconciliation; edit only governed assignment fields here.</p></div><button className="secondary" type="button" disabled={busy || bulkDraftDirty || !!changedRows.length} onClick={() => setStep(0)}>Return to intake</button></div><SummaryCards validation={run.validation} />
+        {bulkUserPanel}
         {changedRows.length > 0 && <div className="callout warning">Unsaved edits. <button type="button" className="text-button" disabled={busy} onClick={() => setDrafts({})}>Discard unsaved edits</button></div>}
         <AssignmentTable run={run} onlyExceptions drafts={drafts} setDrafts={setDrafts} selected={selected} setSelected={setSelected} groupOptions={groupOptions} disabled={busy} />
-        <div className="action-row"><button className="primary" type="button" onClick={() => saveEdits()} disabled={busy || !changedRows.length}>{busy ? "Saving revision…" : `Save ${changedRows.length} edited row(s)`}</button>{run.validation.valid && <button className="secondary" type="button" disabled={busy || !!changedRows.length} onClick={() => setStep(2)}>Continue to preview</button>}<label className="change-reason"><span>Reason for change (required)</span><input className="reason" value={changeReason} onChange={(event) => setChangeReason(event.target.value)} placeholder="Explain the basis for this change" /></label></div><History run={run} />
+        <div className="action-row"><button className="primary" type="button" onClick={() => saveEdits()} disabled={busy || !changedRows.length}>{busy ? "Saving revision…" : `Save ${changedRows.length} edited row(s)`}</button>{run.validation.valid && <button className="secondary" type="button" disabled={busy || bulkDraftDirty || !!changedRows.length} onClick={() => setStep(2)}>Continue to preview</button>}<label className="change-reason"><span>Reason for change (required)</span><input className="reason" value={changeReason} onChange={(event) => setChangeReason(event.target.value)} placeholder="Explain the basis for this change" /></label></div><History run={run} />
       </section>}
 
       {view === "people" && step === 2 && run && <section className="panel wide-panel"><div className="panel-heading"><div><span className="kicker">Step 3</span><h2>Preview changes</h2><p>Review current Axon values against the proposed run. Saving any edit creates a new revision and clears prior approval.</p></div><button className="secondary" type="button" onClick={exportPackage}>Export optional review package</button></div><SummaryCards validation={run.validation} />
         {run.validation.blockerCount > 0 && <div className="callout danger"><strong>{run.validation.blockerCount} blocker(s) remain.</strong><button className="text-button" type="button" onClick={() => setStep(1)}>Review exceptions</button></div>}
+        {bulkUserPanel}
         <div className="bulk-bar"><strong>Assignment-only edits</strong><span>{changedRows.length} row(s) changed</span><label className="change-reason"><span>Reason for change (required)</span><input value={changeReason} onChange={(event) => setChangeReason(event.target.value)} placeholder="Explain the basis for this change" /></label><button className="secondary" type="button" onClick={() => saveEdits()} disabled={busy || !changedRows.length}>Save revision</button></div>
         <AssignmentTable run={run} drafts={drafts} setDrafts={setDrafts} selected={selected} setSelected={setSelected} groupOptions={groupOptions} disabled={busy} />
         {run.validation.updateCount > 0 && <section className="account-review"><div><h3>{run.validation.updateCount} existing account update(s)</h3><p>Open the field-level review before approval. Approval is bound to this run revision and does not submit to Axon.</p></div><button className="secondary" type="button" onClick={() => setExistingReviewOpen((current) => !current)}>{existingReviewOpen ? "Close account review" : "Open existing-account review"}</button>{existingReviewOpen && <div className="difference-list">{run.rows.filter((row) => row.existingAccount && row.differences?.length).map((row) => <article key={row.rowId}><strong>{row.email}</strong>{row.differences.map((diff) => <p key={diff.field}><span>{diff.field}</span><del>{diff.current || "blank"}</del><ins>{diff.proposed || "blank"}</ins></p>)}</article>)}</div>}</section>}
         {changedRows.length > 0 && <div className="callout warning" role="status">Unsaved edits — approval is paused. Save and revalidate, or <button type="button" className="text-button" disabled={busy} onClick={() => { setDrafts({}); setExistingReviewOpen(false); }}>Discard unsaved edits</button>.</div>}
-        <div className="approval-dock"><div><strong>Revision {run.revision}</strong><span>User hash {run.generation.userHash?.slice(0, 12)} · Group hash {run.generation.groupHash?.slice(0, 12)}</span></div><button className="primary" type="button" onClick={approve} disabled={busy || !!changedRows.length || !run.validation.valid || (run.validation.updateCount > 0 && !existingReviewOpen)}>{run.validation.updateCount > 0 ? `Approve ${run.validation.updateCount} account updates and continue` : "Approve preview and continue"}</button></div><History run={run} />
+        <div className="approval-dock"><div><strong>Revision {run.revision}</strong><span>User hash {run.generation.userHash?.slice(0, 12)} · Group hash {run.generation.groupHash?.slice(0, 12)}</span></div><button className="primary" type="button" onClick={approve} disabled={busy || bulkDraftDirty || !!changedRows.length || !run.validation.valid || (run.validation.updateCount > 0 && !existingReviewOpen)}>{run.validation.updateCount > 0 ? `Approve ${run.validation.updateCount} account updates and continue` : "Approve preview and continue"}</button></div><History run={run} />
       </section>}
 
-      {view === "people" && step === 3 && run && <section className="panel"><div className="panel-heading"><div><span className="kicker">Step 4</span><h2>Submit</h2><p>Final writes are deliberate and are never retried automatically.</p></div></div><div className="submission-notice"><strong>{submitTitle}</strong><span>{submitDescription}</span>{!approved && <button className="text-button" onClick={() => setStep(2)}>Return to Preview Changes</button>}</div><SummaryCards validation={run.validation} /><div className="chunk-list">{run.chunks?.map((chunk) => <div key={chunk.chunkId}><span>{chunk.kind === "users" ? "User" : "Group"} chunk {chunk.ordinal}</span><strong>{chunk.rowIds.length} rows</strong><em>{chunk.status}</em></div>)}</div><ConnectionPanel config={config} session={session} onSaved={(nextConfig, nextSession) => { setConfig(nextConfig); setSession(nextSession); setMessage("Connection settings saved. Credentials remain in process memory."); }} /><label className="confirm-field"><span>Type the active Partner / Agency ID to confirm the target</span><input value={confirmAgency} onChange={(event) => setConfirmAgency(event.target.value)} /></label><div className="action-row"><button className="danger-button" type="button" disabled={busy || !!changedRows.length || !approved || !run.chunks?.some(c => c.status === "ready") || !session.configured || !config.writeOperationsEnabled || !confirmAgency} onClick={submitNext}>{busy ? "Submitting once…" : "Submit next eligible chunk to Axon"}</button><button className="secondary" type="button" onClick={exportPackage}>Export package instead</button></div><History run={run} /></section>}
+      {view === "people" && step === 3 && run && <section className="panel"><div className="panel-heading"><div><span className="kicker">Step 4</span><h2>Submit</h2><p>Final writes are deliberate and are never retried automatically.</p></div></div><div className="submission-notice"><strong>{submitTitle}</strong><span>{submitDescription}</span>{!approved && <button className="text-button" onClick={() => setStep(2)}>Return to Preview Changes</button>}</div><SummaryCards validation={run.validation} /><div className="chunk-list">{run.chunks?.map((chunk) => <div key={chunk.chunkId}><span>{chunk.kind === "users" ? "User" : "Group"} chunk {chunk.ordinal}</span><strong>{chunk.rowIds.length} rows</strong><em>{chunk.status}</em></div>)}</div><ConnectionPanel config={config} session={session} onSaved={(nextConfig, nextSession) => { setConfig(nextConfig); setSession(nextSession); setMessage("Connection settings saved. Session ready. Credentials are checked by Axon only when a live action runs."); }} />{session.testCredentialsLoaded ? <label className="confirm-field"><input type="checkbox" checked={confirmTarget} onChange={e=>setConfirmTarget(e.target.checked)} /><span>I confirm submission to {config.agencyBaseUrl} using the loaded test profile ({session.partnerHint}).</span></label> : <label className="confirm-field"><span>Type the active Partner / Agency ID to confirm the target</span><input value={confirmAgency} onChange={(event) => setConfirmAgency(event.target.value)} /></label>}<div className="action-row"><button className="danger-button" type="button" disabled={busy || bulkDraftDirty || !!changedRows.length || !approved || !run.chunks?.some(c => c.status === "ready") || !session.configured || !config.writeOperationsEnabled || (session.testCredentialsLoaded ? !confirmTarget : !confirmAgency)} onClick={submitNext}>{busy ? "Submitting once…" : "Submit next eligible chunk to Axon"}</button><button className="secondary" type="button" onClick={exportPackage}>Export package instead</button></div><History run={run} /></section>}
 
-      {view === "people" && step === 4 && run && <section className="panel"><div className="panel-heading"><div><span className="kicker">Step 5</span><h2>Track results</h2><p>User and Group jobs are tracked separately. Group jobs remain locked until applicable user jobs complete.</p></div><button className="secondary" type="button" onClick={exportPackage}>Export current revision</button></div><div className={`run-state ${run.status === "Failed" ? "failed" : ""}`}><span>Run status</span><strong>{run.status}</strong><small>{run.runId} · Revision {run.revision}</small></div><div className="chunk-list detailed">{run.chunks?.map((chunk) => <div key={chunk.chunkId}><span>{chunk.chunkId}</span><strong>{chunk.status}</strong><em>{chunk.axonJobId ? `Axon job ${chunk.axonJobId}` : "Not submitted"}</em></div>)}</div><ConnectionPanel config={config} session={session} onSaved={(nextConfig, nextSession) => { setConfig(nextConfig); setSession(nextSession); }} /><div className="action-row"><button className="primary" type="button" onClick={track} disabled={busy || !session.configured}>{busy ? "Checking…" : "Check submitted job status"}</button>{run.chunks?.some((chunk) => chunk.status === "ready") && <button className="secondary" type="button" onClick={() => setStep(3)}>Submit next eligible chunk</button>}<button className="secondary" type="button" onClick={newRun}>Start another run</button></div><History run={run} /></section>}
+      {view === "people" && step === 4 && run && <section className="panel"><div className="panel-heading"><div><span className="kicker">Step 5</span><h2>Track results</h2><p>User and Group jobs are tracked separately. Group jobs remain locked until applicable user jobs complete.</p><p>Completed jobs are not snapshot confirmation. Refresh Users after jobs complete to reconcile observable account values; Group membership remains separately verified.</p><p>{run.confirmationSummary?.confirmed || 0} user changes confirmed · {run.confirmationSummary?.awaiting || 0} awaiting confirmation.</p>{!!run.confirmationSummary?.unobservableFields?.length && <p>Not returned by the current snapshot: {run.confirmationSummary.unobservableFields.join(", ")}. These changes remain unverified.</p>}{!!run.confirmationSummary?.mismatchedFields?.length && <p>Values still differ: {run.confirmationSummary.mismatchedFields.join(", ")}.</p>}</div><button className="secondary" type="button" onClick={exportPackage}>Export current revision</button></div><div className={`run-state ${run.status === "Failed" ? "failed" : ""}`}><span>Run status</span><strong>{run.status}</strong><small>{run.runId} · Revision {run.revision}</small></div><div className="chunk-list detailed">{run.chunks?.map((chunk) => <div key={chunk.chunkId}><span>{chunk.chunkId}</span><strong>{chunk.status}</strong><em>{chunk.axonJobId ? `Axon job ${chunk.axonJobId}` : "Not submitted"}</em></div>)}</div><ConnectionPanel config={config} session={session} onSaved={(nextConfig, nextSession) => { setConfig(nextConfig); setSession(nextSession); }} /><div className="action-row"><button className="primary" type="button" onClick={track} disabled={busy || !session.configured}>{busy ? "Checking…" : "Check submitted job status"}</button>{run.chunks?.some((chunk) => chunk.status === "ready") && <button className="secondary" type="button" onClick={() => setStep(3)}>Submit next eligible chunk</button>}<button className="secondary" type="button" onClick={newRun}>Start another run</button></div><History run={run} /></section>}
     </main>
     <footer><span>Shared baseline and pending overlay remain distinct.</span><span>Evidence Groups are unused; compatibility column stays blank.</span><span>One Axon Role is required; the organizational Group assignment may be left blank.</span></footer>
   </div>;

@@ -40,6 +40,8 @@ async function downloadSavedView(path, query) {
 }
 
 export const localApi = {
+  supportDiagnostics: () => request("/api/support/diagnostics"),
+  createRelationship: values => request("/api/review/relationships", {method:"POST", body:JSON.stringify(values)}),
   health: () => request("/api/health"),
   session: () => request("/api/session"),
   config: () => request("/api/config"),
@@ -81,5 +83,6 @@ export const localApi = {
     method: "POST",
     body: JSON.stringify({ values }),
   }),
+  bulkCrosswalk: (key, values) => request(`/api/crosswalks/${encodeURIComponent(key)}/bulk`, {method:"POST", body:JSON.stringify(values)}),
   crosswalkExportUrl: (key) => `/api/crosswalks/${encodeURIComponent(key)}/export`,
 };

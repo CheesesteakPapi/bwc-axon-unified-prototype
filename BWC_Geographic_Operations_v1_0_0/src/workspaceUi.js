@@ -14,3 +14,9 @@ export function devicePullNeedsScope(resources, filters, allowFull) {
   return resources.includes("Devices") && !allowFull &&
     ![filters.deviceModel, filters.deviceStatus, filters.deviceHomeId].some(v => String(v || "").trim());
 }
+
+export function effectiveDeviceScope(mode, filters) {
+  if (mode === "full") return {deviceModel:"",deviceStatus:"",deviceHomeId:""};
+  if (mode === "tracked") return {deviceModel:filters.deviceModel || "",deviceStatus:"",deviceHomeId:""};
+  return {...filters};
+}
